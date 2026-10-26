@@ -1,6 +1,6 @@
-# RUVEXI Backend API (`backend`)
+# BillCare Solution Backend API (`backend`)
 
-Multi-tenant backend engine built with **FastAPI** following the **Modular Monolith** architecture pattern recommended in the RUVEXI PRD (Section 6).
+Multi-tenant backend engine built with **FastAPI** following the **Modular Monolith** architecture pattern.
 
 ---
 
@@ -28,17 +28,4 @@ backend/
 │   │   └── subscriptions/       # Razorpay subscriptions, plan tiers & quotas
 │   ├── workers/                 # Celery / ARQ worker for reminders & async jobs
 │   └── main.py                  # FastAPI application entrypoint
-├── tests/
-│   ├── functional/              # End-to-end booking, checkout, and inventory tests
-│   └── tenant_isolation/       # Critical tests ensuring Salon A cannot access Salon B
-├── Dockerfile                   # Production deployment for Railway
-└── requirements.txt
 ```
-
----
-
-## 🔒 Multi-Tenant Security Principle (PRD Section 5.1 - 5.3)
-> **"Never trust a salon_id supplied by the frontend as proof of access."**
-- Every authenticated request extracts the user's verified `user_id` from Supabase Auth JWT.
-- The user's active `salon_id` and role permissions are resolved strictly server-side.
-- All database queries enforce tenant scoping (`WHERE salon_id = :salon_id`).
