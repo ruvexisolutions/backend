@@ -3,7 +3,7 @@ import json
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.models import (
@@ -29,7 +29,6 @@ def get_bootstrap_data(db: Session = Depends(get_db)):
     salon = db.query(SalonModel).first()
     if not salon:
         raise HTTPException(status_code=404, detail="Salon not found")
-    user = db.query(UserModel).filter(UserModel.salon_id == salon.id).first()
 
     customers = [c.to_dict() for c in db.query(CustomerModel).filter(CustomerModel.salon_id == salon.id).all()]
     services = [s.to_dict() for s in db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all()]
@@ -42,7 +41,6 @@ def get_bootstrap_data(db: Session = Depends(get_db)):
 
     return {
         "salon": salon.to_dict(),
-        "user": user.to_dict() if user else None,
         "customers": customers,
         "services": services,
         "staff": staff,
@@ -72,12 +70,7 @@ def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
 
     # Verify cryptographic password hash
     if not verify_password(password, user.password_hash):
-        # Graceful migration for default demo accounts
-        if email in ["owner@billcare.io", "manager@billcare.io", "reception@billcare.io"] and password == "billcare2026":
-            user.password_hash = hash_password("billcare2026")
-            db.commit()
-        else:
-            raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
     salon = db.query(SalonModel).filter(SalonModel.id == user.salon_id).first()
     if not salon:
@@ -167,11 +160,14 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     }
 
 @router.get("/auth/me", tags=["Auth"])
-def get_current_user(token: Optional[str] = None, db: Session = Depends(get_db)):
+def get_current_user(request: Request, token: Optional[str] = None, db: Session = Depends(get_db)):
+    # Extract token from Authorization header if present
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+
     if not token:
-        user = db.query(UserModel).first()
-        salon = db.query(SalonModel).first()
-        return {"user": user.to_dict() if user else None, "salon": salon.to_dict() if salon else None}
+        raise HTTPException(status_code=401, detail="Authentication token required")
 
     payload = decode_access_token(token)
     if not payload:
