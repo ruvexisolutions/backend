@@ -1,7 +1,7 @@
 import os
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from sqlalchemy.orm import Session
@@ -179,6 +179,53 @@ def get_current_user(request: Request, token: Optional[str] = None, db: Session 
         raise HTTPException(status_code=404, detail="User not found")
     salon = db.query(SalonModel).filter(SalonModel.id == user.salon_id).first()
     return {"user": user.to_dict(), "salon": salon.to_dict() if salon else None}
+
+@router.post("/auth/forgot-password", tags=["Auth"])
+def forgot_password(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    email = (payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Work email address is required")
+
+    user = db.query(UserModel).filter(UserModel.email.ilike(email)).first()
+    # Return success confirmation without leaking user enumeration
+    response = {
+        "success": True,
+        "message": "If an account exists for that email, a password reset link has been dispatched.",
+    }
+    if user:
+        reset_token = create_access_token(
+            {"sub": user.id, "email": user.email, "purpose": "password_reset"},
+            expires_delta=timedelta(hours=1),
+        )
+        response["reset_token"] = reset_token
+    return response
+
+@router.post("/auth/reset-password", tags=["Auth"])
+def reset_password(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    token = (payload.get("token") or "").strip()
+    new_password = payload.get("new_password") or ""
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Reset token is required")
+    if not new_password or len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+
+    decoded = decode_access_token(token)
+    if not decoded or decoded.get("purpose") != "password_reset":
+        raise HTTPException(status_code=400, detail="Reset link is invalid or has expired")
+
+    user_id = decoded.get("sub")
+    user = db.query(UserModel).filter(UserModel.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User account not found")
+
+    user.password_hash = hash_password(new_password)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Password updated successfully. You may now sign in.",
+    }
 
 # ============================================================================
 # Salon Profile
