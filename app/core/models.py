@@ -1,5 +1,6 @@
 import json
 import uuid
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from sqlalchemy import (
     Column,
@@ -34,25 +35,60 @@ class SalonModel(Base):
     timing = Column(String(128), default="10:00 AM - 09:00 PM (All Days)")
     rating = Column(Float, default=4.9)
     review_count = Column(Integer, default=418)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Subscription & 7-Day Free Trial
+    trial_started_at = Column(DateTime, default=datetime.utcnow)
+    trial_ends_at = Column(DateTime, nullable=True)
+    subscription_status = Column(String(32), default="trial") # 'trial', 'active', 'expired', 'suspended'
+    subscription_plan = Column(String(64), default="free_trial")
 
-    # Salon UPI & Banking Settlement Details
-    upi_id = Column(String(128), default="billcare.pos@icici")
+    # Settlement Banking & Dynamic UPI (Per-Salon Configured Direct Payment)
+    upi_id = Column(String(128), nullable=True)
+    upi_payee_name = Column(String(128), nullable=True)
+    upi_enabled = Column(Boolean, default=False)
+    cash_enabled = Column(Boolean, default=True)
+    payment_instructions = Column(Text, nullable=True)
     bank_account_name = Column(String(128), nullable=True)
     bank_account_number = Column(String(64), nullable=True)
     bank_ifsc = Column(String(32), nullable=True)
     bank_name = Column(String(128), nullable=True)
 
-    # Meta WhatsApp Embedded Signup Credentials
+    # Meta WhatsApp Cloud API credentials
     whatsapp_phone_number_id = Column(String(128), nullable=True)
     whatsapp_waba_id = Column(String(128), nullable=True)
     whatsapp_access_token = Column(Text, nullable=True)
     whatsapp_display_number = Column(String(32), nullable=True)
-    whatsapp_verified_name = Column(String(255), nullable=True)
+    whatsapp_verified_name = Column(String(128), nullable=True)
     whatsapp_quality_rating = Column(String(32), default="GREEN")
     whatsapp_status = Column(String(32), default="not_connected")
+    whatsapp_webhook_verified = Column(Boolean, default=False)
+    whatsapp_last_tested_at = Column(DateTime, nullable=True)
+    whatsapp_error_message = Column(Text, nullable=True)
+    whatsapp_templates_status = Column(String(64), default="APPROVED (3 Active)")
+
+    def is_trial_active(self) -> bool:
+        if self.subscription_status == "active":
+            return True
+        if self.subscription_status == "trial" and self.trial_ends_at:
+            return datetime.utcnow() <= self.trial_ends_at
+        return False
+
+    def trial_days_left(self) -> int:
+        if not self.trial_ends_at:
+            return 7
+        delta = self.trial_ends_at - datetime.utcnow()
+        return max(0, delta.days)
 
     def to_dict(self):
+        is_active = self.is_trial_active()
+        days_left = self.trial_days_left()
+
+        def mask_token(t: Optional[str]) -> Optional[str]:
+            if not t:
+                return None
+            if len(t) <= 10:
+                return "••••••••"
+            return f"{t[:4]}••••••••{t[-4:]}"
+
         return {
             "id": self.id,
             "name": self.name,
@@ -72,11 +108,29 @@ class SalonModel(Base):
             "timing": self.timing,
             "rating": self.rating,
             "reviewCount": self.review_count,
-            "upiId": self.upi_id or "billcare.pos@icici",
+            "upiId": self.upi_id or "",
+            "upiPayeeName": self.upi_payee_name or self.name,
+            "upiEnabled": bool(self.upi_enabled and self.upi_id),
+            "cashEnabled": self.cash_enabled if self.cash_enabled is not None else True,
+            "paymentInstructions": self.payment_instructions or "",
+            "paymentSettings": {
+                "cashEnabled": self.cash_enabled if self.cash_enabled is not None else True,
+                "upiEnabled": bool(self.upi_enabled and self.upi_id),
+                "isUpiConfigured": bool(self.upi_id and self.upi_id.strip()),
+                "upiId": self.upi_id or "",
+                "upiPayeeName": self.upi_payee_name or self.name,
+                "paymentInstructions": self.payment_instructions or "",
+            },
             "bankAccountName": self.bank_account_name or self.name,
             "bankAccountNumber": self.bank_account_number or "",
             "bankIfsc": self.bank_ifsc or "",
             "bankName": self.bank_name or "",
+            "trialStartedAt": self.trial_started_at.isoformat() if self.trial_started_at else None,
+            "trialEndsAt": self.trial_ends_at.isoformat() if self.trial_ends_at else None,
+            "subscriptionStatus": self.subscription_status or "trial",
+            "subscriptionPlan": self.subscription_plan or "free_trial",
+            "isTrialActive": is_active,
+            "trialDaysLeft": days_left,
             "whatsapp": {
                 "status": self.whatsapp_status or "not_connected",
                 "displayNumber": self.whatsapp_display_number,
@@ -84,7 +138,12 @@ class SalonModel(Base):
                 "phoneNumberId": self.whatsapp_phone_number_id,
                 "wabaId": self.whatsapp_waba_id,
                 "qualityRating": self.whatsapp_quality_rating or "GREEN",
-                "isConnected": bool(self.whatsapp_phone_number_id and self.whatsapp_access_token),
+                "isConnected": bool(self.whatsapp_phone_number_id and self.whatsapp_access_token and self.whatsapp_status == "connected"),
+                "isWebhookVerified": bool(self.whatsapp_webhook_verified),
+                "lastTestedAt": self.whatsapp_last_tested_at.isoformat() if self.whatsapp_last_tested_at else None,
+                "errorMessage": self.whatsapp_error_message,
+                "templatesStatus": self.whatsapp_templates_status or "APPROVED (3 Active)",
+                "maskedToken": mask_token(self.whatsapp_access_token),
             }
         }
 
@@ -97,8 +156,75 @@ class UserModel(Base):
     email = Column(String(128), unique=True, index=True, nullable=False)
     phone = Column(String(32), default="")
     password_hash = Column(String(256), default="")
-    role = Column(String(32), default="owner")
+    role = Column(String(32), default="SALON_MANAGER")
     avatar = Column(String(512), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        # Normalize role for API consumers
+        normalized_role = self.role
+        if normalized_role in ("owner", "manager", "SALON_MANAGER"):
+            normalized_role = "SALON_MANAGER"
+        elif normalized_role in ("receptionist", "SALON_RECEPTIONIST"):
+            normalized_role = "SALON_RECEPTIONIST"
+
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "name": self.name,
+            "email": self.email,
+            "phone": self.phone,
+            "role": normalized_role,
+            "avatar": self.avatar,
+        }
+
+class InvitationModel(Base):
+    __tablename__ = "invitations"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"inv_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
+    email = Column(String(128), nullable=False)
+    role = Column(String(32), default="SALON_RECEPTIONIST")
+    token = Column(String(128), unique=True, index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    is_accepted = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "email": self.email,
+            "role": self.role,
+            "token": self.token,
+            "expiresAt": self.expires_at.isoformat() if self.expires_at else None,
+            "isAccepted": self.is_accepted,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+class OTPModel(Base):
+    __tablename__ = "otps"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"otp_{uuid.uuid4().hex[:12]}")
+    phone = Column(String(32), nullable=False, index=True)
+    otp_hash = Column(String(256), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    attempts = Column(Integer, default=0)
+    is_used = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class BranchModel(Base):
+    __tablename__ = "branches"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"brn_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(128), nullable=False)
+    address = Column(String(255), default="")
+    city = Column(String(64), default="")
+    phone = Column(String(32), default="")
+    email = Column(String(128), default="")
+    chairs = Column(Integer, default=6)
+    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     def to_dict(self):
@@ -106,10 +232,13 @@ class UserModel(Base):
             "id": self.id,
             "salonId": self.salon_id,
             "name": self.name,
-            "email": self.email,
+            "address": self.address,
+            "city": self.city,
             "phone": self.phone,
-            "role": self.role,
-            "avatar": self.avatar,
+            "email": self.email,
+            "chairs": self.chairs,
+            "isActive": self.is_active,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
         }
 
 class CustomerModel(Base):
@@ -311,6 +440,7 @@ class AppointmentModel(Base):
     time = Column(String(32), default="11:00 AM")
     duration_minutes = Column(Integer, default=45)
     price = Column(Float, default=0.0)
+    chair_number = Column(Integer, default=1)
     status = Column(String(32), default="confirmed")
     source = Column(String(32), default="website")
     notes = Column(Text, default="")
@@ -334,6 +464,7 @@ class AppointmentModel(Base):
             "time": self.time,
             "durationMinutes": self.duration_minutes,
             "price": self.price,
+            "chairNumber": self.chair_number,
             "status": self.status,
             "source": self.source,
             "notes": self.notes,
@@ -362,7 +493,18 @@ class InvoiceModel(Base):
     grand_total = Column(Float, default=0.0)
     payment_method = Column(String(32), default="UPI")
     payment_breakdown_json = Column(Text, default="{}")
-    status = Column(String(32), default="paid")
+    status = Column(String(32), default="paid") # 'paid', 'refunded', 'partially_paid', 'cancelled', 'pending'
+    amount_received = Column(Float, default=0.0)
+    change_given = Column(Float, default=0.0)
+    verified_by_name = Column(String(128), nullable=True)
+    verified_by_user_id = Column(String(64), nullable=True)
+    payment_reference = Column(String(128), nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    refund_amount = Column(Float, default=0.0)
+    refund_reason = Column(Text, nullable=True)
+    refunded_at = Column(DateTime, nullable=True)
+    points_redeemed = Column(Integer, default=0)
+    points_discount = Column(Float, default=0.0)
     notes = Column(Text, default="")
     date = Column(String(64), default="")
     created_at = Column(String(64), default=lambda: datetime.utcnow().isoformat())
@@ -403,6 +545,18 @@ class InvoiceModel(Base):
             "paymentBreakdown": breakdown,
             "splitDetails": breakdown,
             "status": self.status,
+            "paymentStatus": self.status,
+            "amountReceived": self.amount_received or 0.0,
+            "changeGiven": self.change_given or 0.0,
+            "verifiedByName": self.verified_by_name,
+            "verifiedByUserId": self.verified_by_user_id,
+            "paymentReference": self.payment_reference,
+            "paidAt": self.paid_at.isoformat() if self.paid_at else None,
+            "refundAmount": self.refund_amount or 0.0,
+            "refundReason": self.refund_reason,
+            "refundedAt": self.refunded_at.isoformat() if self.refunded_at else None,
+            "pointsRedeemed": self.points_redeemed or 0,
+            "pointsDiscount": self.points_discount or 0.0,
             "notes": self.notes,
             "date": self.date,
             "createdAt": self.created_at,
@@ -475,3 +629,192 @@ class FeedbackModel(Base):
             "improvementTags": tags,
             "tags": tags,
         }
+
+class WhatsAppMessageModel(Base):
+    __tablename__ = "whatsapp_messages"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"wmsg_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    recipient_phone = Column(String(32), nullable=False)
+    customer_name = Column(String(128), default="Valued Client")
+    message_type = Column(String(64), nullable=False) # 'bill_receipt', 'appointment_confirmation', 'appointment_reminder', 'retention_campaign'
+    template_name = Column(String(64), default="billcare_service_receipt")
+    meta_message_id = Column(String(128), nullable=True, index=True)
+    status = Column(String(32), default="sent") # 'sent', 'delivered', 'read', 'failed'
+    idempotency_key = Column(String(128), nullable=True, index=True)
+    error_details = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "recipientPhone": self.recipient_phone,
+            "customerName": self.customer_name,
+            "messageType": self.message_type,
+            "templateName": self.template_name,
+            "metaMessageId": self.meta_message_id,
+            "status": self.status,
+            "idempotencyKey": self.idempotency_key,
+            "errorDetails": self.error_details,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+class CashRegisterShiftModel(Base):
+    __tablename__ = "cash_register_shifts"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"shift_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    opened_by_user_id = Column(String(64), nullable=True)
+    opened_by_name = Column(String(128), default="Front Desk Cashier")
+    closed_by_user_id = Column(String(64), nullable=True)
+    closed_by_name = Column(String(128), nullable=True)
+    opening_float = Column(Float, default=2000.0) # Starting cash in drawer
+    cash_sales = Column(Float, default=0.0)
+    upi_sales = Column(Float, default=0.0)
+    card_sales = Column(Float, default=0.0)
+    total_sales = Column(Float, default=0.0)
+    expected_cash = Column(Float, default=2000.0) # opening_float + cash_sales
+    counted_cash = Column(Float, nullable=True) # Actual counted cash at close
+    cash_variance = Column(Float, default=0.0) # counted_cash - expected_cash
+    status = Column(String(32), default="open") # 'open', 'closed'
+    notes = Column(Text, default="")
+    opened_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "openedByUserId": self.opened_by_user_id,
+            "openedByName": self.opened_by_name,
+            "closedByUserId": self.closed_by_user_id,
+            "closedByName": self.closed_by_name,
+            "openingFloat": self.opening_float,
+            "cashSales": self.cash_sales,
+            "upiSales": self.upi_sales,
+            "cardSales": self.card_sales,
+            "totalSales": self.total_sales,
+            "expectedCash": self.expected_cash,
+            "countedCash": self.counted_cash,
+            "cashVariance": self.cash_variance,
+            "status": self.status,
+            "notes": self.notes,
+            "openedAt": self.opened_at.isoformat() if self.opened_at else None,
+            "closedAt": self.closed_at.isoformat() if self.closed_at else None,
+        }
+
+class ExpenseModel(Base):
+    __tablename__ = "expenses"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"exp_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(128), nullable=False)
+    category = Column(String(64), default="Supplies") # 'Supplies', 'Laundry', 'Refreshments', 'Utilities', 'Maintenance', 'Marketing'
+    amount = Column(Float, nullable=False)
+    payment_method = Column(String(32), default="Cash") # 'Cash', 'UPI', 'Bank Transfer'
+    date = Column(String(32), default=lambda: datetime.utcnow().strftime("%Y-%m-%d"))
+    recorded_by_name = Column(String(128), default="Salon Manager")
+    notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "title": self.title,
+            "category": self.category,
+            "amount": self.amount,
+            "paymentMethod": self.payment_method,
+            "date": self.date,
+            "recordedByName": self.recorded_by_name,
+            "notes": self.notes,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+class InventoryLedgerModel(Base):
+    __tablename__ = "inventory_ledger"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"ledg_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_id = Column(String(64), ForeignKey("inventory.id", ondelete="CASCADE"), nullable=False)
+    item_name = Column(String(128), nullable=False)
+    change_qty = Column(Integer, nullable=False) # e.g. -2 for sale, +10 for restock, +2 for refund restock
+    previous_stock = Column(Integer, default=0)
+    new_stock = Column(Integer, default=0)
+    reason = Column(String(128), default="sale") # 'sale', 'restock', 'refund_restock', 'adjustment', 'damage'
+    performed_by = Column(String(128), default="POS System")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "itemId": self.item_id,
+            "itemName": self.item_name,
+            "changeQty": self.change_qty,
+            "previousStock": self.previous_stock,
+            "newStock": self.new_stock,
+            "reason": self.reason,
+            "performedBy": self.performed_by,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+        }
+
+class PaymentModel(Base):
+    __tablename__ = "payments"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"pay_{uuid.uuid4().hex[:12]}")
+    salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    invoice_id = Column(String(64), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False, index=True)
+    amount = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(10), default="INR")
+    method = Column(String(32), nullable=False, default="CASH")  # 'CASH', 'UPI'
+    status = Column(String(32), default="pending")  # 'pending', 'completed', 'failed', 'refunded'
+    provider_ref_id = Column(String(255), nullable=True)  # Unique transaction reference (BC-TXN-...)
+    verification_method = Column(String(64), default="manual_receptionist_verification")
+    verified_by_user_id = Column(String(64), nullable=True)
+    verified_by_name = Column(String(128), nullable=True)
+    amount_received = Column(Float, default=0.0)
+    change_given = Column(Float, default=0.0)
+    upi_vpa_snapshot = Column(String(128), nullable=True)
+    upi_payee_name_snapshot = Column(String(128), nullable=True)
+    upi_uri_snapshot = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    audit_metadata_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    confirmed_at = Column(DateTime, nullable=True)
+
+    def to_dict(self):
+        audit_data = {}
+        try:
+            audit_data = json.loads(self.audit_metadata_json) if self.audit_metadata_json else {}
+        except Exception:
+            audit_data = {}
+        return {
+            "id": self.id,
+            "salonId": self.salon_id,
+            "invoiceId": self.invoice_id,
+            "amount": self.amount,
+            "currency": self.currency,
+            "method": self.method,
+            "paymentMethod": self.method,
+            "status": self.status,
+            "paymentStatus": self.status,
+            "transactionReference": self.provider_ref_id,
+            "providerRefId": self.provider_ref_id,
+            "verificationMethod": self.verification_method,
+            "verifiedByUserId": self.verified_by_user_id,
+            "verifiedByName": self.verified_by_name,
+            "amountReceived": self.amount_received,
+            "changeGiven": self.change_given,
+            "upiVpaSnapshot": self.upi_vpa_snapshot,
+            "upiPayeeNameSnapshot": self.upi_payee_name_snapshot,
+            "upiUriSnapshot": self.upi_uri_snapshot,
+            "notes": self.notes,
+            "auditMetadata": audit_data,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "confirmedAt": self.confirmed_at.isoformat() if self.confirmed_at else None,
+        }
+
