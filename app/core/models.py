@@ -152,6 +152,7 @@ class UserModel(Base):
 
     id = Column(String(64), primary_key=True, default=lambda: f"usr_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(String(64), nullable=True)
     name = Column(String(128), nullable=False)
     email = Column(String(128), unique=True, index=True, nullable=False)
     phone = Column(String(32), default="")
@@ -171,11 +172,13 @@ class UserModel(Base):
         return {
             "id": self.id,
             "salonId": self.salon_id,
+            "branchId": self.branch_id,
             "name": self.name,
             "email": self.email,
             "phone": self.phone,
             "role": normalized_role,
             "avatar": self.avatar,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
         }
 
 class InvitationModel(Base):
@@ -183,6 +186,7 @@ class InvitationModel(Base):
 
     id = Column(String(64), primary_key=True, default=lambda: f"inv_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(String(64), nullable=True)
     email = Column(String(128), nullable=False)
     role = Column(String(32), default="SALON_RECEPTIONIST")
     token = Column(String(128), unique=True, index=True, nullable=False)
@@ -194,6 +198,7 @@ class InvitationModel(Base):
         return {
             "id": self.id,
             "salonId": self.salon_id,
+            "branchId": self.branch_id,
             "email": self.email,
             "role": self.role,
             "token": self.token,
@@ -219,6 +224,7 @@ class BranchModel(Base):
     id = Column(String(64), primary_key=True, default=lambda: f"brn_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(128), nullable=False)
+    code = Column(String(32), default=lambda: f"BR_{uuid.uuid4().hex[:4].upper()}")
     address = Column(String(255), default="")
     city = Column(String(64), default="")
     phone = Column(String(32), default="")
@@ -232,6 +238,7 @@ class BranchModel(Base):
             "id": self.id,
             "salonId": self.salon_id,
             "name": self.name,
+            "code": self.code or f"BR_{self.id[-4:].upper()}",
             "address": self.address,
             "city": self.city,
             "phone": self.phone,
@@ -348,6 +355,7 @@ class StaffModel(Base):
 
     id = Column(String(64), primary_key=True, default=lambda: f"stf_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(String(64), nullable=True)
     name = Column(String(128), nullable=False)
     phone = Column(String(32), default="")
     email = Column(String(128), default="")
@@ -375,6 +383,7 @@ class StaffModel(Base):
         return {
             "id": self.id,
             "salonId": self.salon_id,
+            "branchId": self.branch_id,
             "name": self.name,
             "phone": self.phone,
             "email": self.email,

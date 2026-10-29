@@ -524,9 +524,10 @@ def create_receptionist_invitation(
     context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
     db: Session = Depends(get_db)
 ):
-    """Salon Manager creates a single-use invitation for a receptionist to join."""
+    """Salon Manager creates a single-use invitation for a receptionist to join a specific branch."""
     user, salon = context
     email = (payload.get("email") or "").strip().lower()
+    branch_id = payload.get("branchId") or payload.get("branch_id")
 
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email address is required")
@@ -535,9 +536,18 @@ def create_receptionist_invitation(
     if existing_user:
         raise HTTPException(status_code=400, detail="An account with this email address already exists")
 
+    if branch_id:
+        branch_obj = db.query(BranchModel).filter(
+            BranchModel.id == branch_id,
+            BranchModel.salon_id == salon.id
+        ).first()
+        if not branch_obj:
+            branch_id = None
+
     invite_token = uuid.uuid4().hex + uuid.uuid4().hex
     invitation = InvitationModel(
         salon_id=salon.id,
+        branch_id=branch_id,
         email=email,
         role="SALON_RECEPTIONIST",
         token=invite_token,
@@ -558,7 +568,7 @@ def create_receptionist_invitation(
 
 @router.get("/invitations/{token}", tags=["Invitations"])
 def get_invitation_details(token: str, db: Session = Depends(get_db)):
-    """Validates invitation token and retrieves salon information for the receptionist."""
+    """Validates invitation token and retrieves salon & branch information for the receptionist."""
     invitation = db.query(InvitationModel).filter(
         InvitationModel.token == token,
         InvitationModel.is_accepted == False,
@@ -569,19 +579,23 @@ def get_invitation_details(token: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Invitation link is invalid or has expired")
 
     salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
+    branch = db.query(BranchModel).filter(BranchModel.id == invitation.branch_id).first() if invitation.branch_id else None
+
     return {
         "valid": True,
         "email": invitation.email,
         "role": invitation.role,
         "salonName": salon.name if salon else "BillCare Studio",
         "salonId": invitation.salon_id,
+        "branchId": invitation.branch_id,
+        "branchName": branch.name if branch else (salon.branch if salon else "Flagship Studio"),
         "expiresAt": invitation.expires_at.isoformat()
     }
 
 
 @router.post("/invitations/accept", tags=["Invitations"])
 def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """Enrolls receptionist into the authorized salon using the single-use token."""
+    """Enrolls receptionist into the authorized salon & branch using the single-use token."""
     token = (payload.get("token") or "").strip()
     name = (payload.get("name") or "").strip()
     password = payload.get("password") or ""
@@ -610,6 +624,7 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
     new_user = UserModel(
         id=f"usr_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
+        branch_id=invitation.branch_id,
         name=name,
         email=invitation.email,
         phone=phone,
@@ -618,6 +633,32 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
         avatar=name[0].upper()
     )
     db.add(new_user)
+
+    # Automatically add or update Staff table record with branch allotment
+    existing_staff = db.query(StaffModel).filter(
+        StaffModel.salon_id == salon.id,
+        StaffModel.email == invitation.email
+    ).first()
+    if not existing_staff:
+        new_staff = StaffModel(
+            id=f"stf_{uuid.uuid4().hex[:12]}",
+            salon_id=salon.id,
+            branch_id=invitation.branch_id,
+            name=name,
+            email=invitation.email,
+            phone=phone,
+            role="Salon Receptionist",
+            commission_rate=0.0,
+            is_clocked_in=True,
+            clocked_in_at=datetime.utcnow().strftime("%I:%M %p"),
+            avatar=name[0].upper(),
+            specialties_json=json.dumps(["Front Desk POS", "Guest Management"]),
+            status="clocked_in"
+        )
+        db.add(new_staff)
+    else:
+        existing_staff.branch_id = invitation.branch_id
+
     invitation.is_accepted = True
     db.commit()
     db.refresh(new_user)
@@ -628,6 +669,7 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
         "name": new_user.name,
         "role": "SALON_RECEPTIONIST",
         "salon_id": salon.id,
+        "branch_id": invitation.branch_id,
     })
 
     return {
@@ -635,7 +677,7 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
         "token": auth_token,
         "user": new_user.to_dict(),
         "salon": salon.to_dict(),
-        "message": f"Welcome to {salon.name}! Your Salon Receptionist account is ready."
+        "message": f"Welcome to {salon.name}! Your Front Desk account is ready."
     }
 
 
@@ -778,15 +820,15 @@ def create_branch(
     db: Session = Depends(get_db)
 ):
     _, salon = context
-    if salon.subscription_status == "trial":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Multi-branch management is locked during the 7-day free trial. Upgrade to an active plan."
-        )
+
+    branch_code = (data.get("code") or "").strip().upper()
+    if not branch_code:
+        branch_code = f"BR_{uuid.uuid4().hex[:4].upper()}"
 
     branch = BranchModel(
         salon_id=salon.id,
         name=data.get("name", "New Branch Studio"),
+        code=branch_code,
         address=data.get("address", ""),
         city=data.get("city", ""),
         phone=data.get("phone", ""),
@@ -1252,6 +1294,15 @@ def update_staff(
         elif k == "phone": member.phone = v
         elif k == "email": member.email = v
         elif k == "role": member.role = v
+        elif k in ("branchId", "branch_id"):
+            member.branch_id = v
+            if member.email:
+                user_rec = db.query(UserModel).filter(
+                    UserModel.salon_id == salon.id,
+                    UserModel.email == member.email
+                ).first()
+                if user_rec:
+                    user_rec.branch_id = v
         elif k == "commissionRate": member.commission_rate = float(v)
         elif k == "isClockedIn": member.is_clocked_in = bool(v)
         elif k == "clockedInAt": member.clocked_in_at = str(v)

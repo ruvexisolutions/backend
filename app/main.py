@@ -13,7 +13,7 @@ def ensure_schema_compatibility():
         tables = inspector.get_table_names()
         is_postgres = "postgres" in engine.dialect.name.lower()
 
-        # Users role check constraint compatibility
+        # Users role check constraint & branch_id compatibility
         if "users" in tables:
             try:
                 with engine.begin() as conn:
@@ -21,6 +21,44 @@ def ensure_schema_compatibility():
                     conn.execute(text("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SALON_MANAGER', 'SALON_RECEPTIONIST', 'owner', 'manager', 'receptionist', 'admin', 'MASTER_ADMIN'))"))
             except Exception as ex:
                 print(f"[Users Check Constraint Migration] {ex}")
+            
+            user_cols = [c["name"] for c in inspector.get_columns("users")]
+            if "branch_id" not in user_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64)"))
+                    else:
+                        conn.execute(text("ALTER TABLE users ADD COLUMN branch_id VARCHAR(64)"))
+
+        # Invitations branch_id
+        if "invitations" in tables:
+            inv_t_cols = [c["name"] for c in inspector.get_columns("invitations")]
+            if "branch_id" not in inv_t_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE invitations ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64)"))
+                    else:
+                        conn.execute(text("ALTER TABLE invitations ADD COLUMN branch_id VARCHAR(64)"))
+
+        # Staff branch_id
+        if "staff" in tables:
+            staff_cols = [c["name"] for c in inspector.get_columns("staff")]
+            if "branch_id" not in staff_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE staff ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64)"))
+                    else:
+                        conn.execute(text("ALTER TABLE staff ADD COLUMN branch_id VARCHAR(64)"))
+
+        # Branches code column
+        if "branches" in tables:
+            brn_cols = [c["name"] for c in inspector.get_columns("branches")]
+            if "code" not in brn_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE branches ADD COLUMN IF NOT EXISTS code VARCHAR(32)"))
+                    else:
+                        conn.execute(text("ALTER TABLE branches ADD COLUMN code VARCHAR(32)"))
 
         # Salons table columns upgrade
         if "salons" in tables:
