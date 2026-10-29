@@ -266,6 +266,7 @@ class CustomerModel(Base):
     patch_test_status = Column(String(64), default="Verified Safe")
     patch_test_date = Column(String(64), default="")
     allergies = Column(String(255), default="None Reported")
+    wallet_balance = Column(Float, default=0.0) # Prepaid customer wallet credit balance
     rebooking_cadence_days = Column(Integer, default=28)
     created_at = Column(String(64), default=lambda: datetime.utcnow().isoformat())
 
@@ -288,6 +289,7 @@ class CustomerModel(Base):
             "totalSpend": self.total_spend,
             "totalSpent": self.total_spent or self.total_spend,
             "loyaltyPoints": self.loyalty_points,
+            "walletBalance": self.wallet_balance or 0.0,
             "lastVisitDate": self.last_visit_date,
             "tags": tags,
             "notes": self.notes,
@@ -313,6 +315,10 @@ class ServiceModel(Base):
     buffer_minutes = Column(Integer, default=5)
     price = Column(Float, nullable=False)
     description = Column(Text, default="")
+    material_used = Column(String(255), default="") # Average consumable material/product used per service (e.g. "60 ml Keratin Formula")
+    material_item_id = Column(String(64), nullable=True) # Linked inventory stock item ID
+    material_quantity = Column(Float, default=0.0) # Quantity consumed per service
+    material_unit = Column(String(32), default="ml") # Unit (ml, g, ampoule, bottle)
     is_online_bookable = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
     popular = Column(Boolean, default=False)
@@ -327,6 +333,11 @@ class ServiceModel(Base):
             "bufferMinutes": self.buffer_minutes,
             "price": self.price,
             "description": self.description,
+            "materialUsed": self.material_used or "",
+            "materialItemId": self.material_item_id or "",
+            "materialQuantity": self.material_quantity or 0.0,
+            "materialUnit": self.material_unit or "ml",
+            "averageMaterialUsed": self.material_used or "",
             "isOnlineBookable": self.is_online_bookable,
             "isActive": self.is_active,
             "popular": self.popular,

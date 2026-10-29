@@ -1041,10 +1041,41 @@ def update_customer(
         elif k == "loyaltyPoints": customer.loyalty_points = int(v)
         elif k == "lastVisitDate": customer.last_visit_date = str(v)
         elif k == "allergies": customer.allergies = str(v)
+        elif k == "walletBalance": customer.wallet_balance = float(v)
 
     db.commit()
     db.refresh(customer)
     return customer.to_dict()
+
+
+@router.post("/customers/{customer_id}/wallet", tags=["Customers"])
+def topup_customer_wallet(
+    customer_id: str,
+    data: Dict[str, Any] = Body(...),
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+    db: Session = Depends(get_db)
+):
+    """Adds prepaid credit / top-up to customer wallet balance."""
+    _, salon = context
+    customer = db.query(CustomerModel).filter(
+        CustomerModel.id == customer_id,
+        CustomerModel.salon_id == salon.id
+    ).first()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    amount = float(data.get("amount") or 0.0)
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Top-up amount must be greater than zero.")
+
+    customer.wallet_balance = round(float(customer.wallet_balance or 0.0) + amount, 2)
+    db.commit()
+    db.refresh(customer)
+    return {
+        "success": True,
+        "message": f"Added ₹{amount:,.2f} credit to {customer.name}'s wallet. New balance: ₹{customer.wallet_balance:,.2f}.",
+        "customer": customer.to_dict()
+    }
 
 
 @router.delete("/customers/{customer_id}", tags=["Customers"])
@@ -1093,6 +1124,10 @@ def create_service(
         buffer_minutes=int(data.get("bufferMinutes") or 5),
         price=float(data.get("price") or 0.0),
         description=data.get("description", ""),
+        material_used=data.get("materialUsed") or data.get("averageMaterialUsed") or "",
+        material_item_id=data.get("materialItemId") or None,
+        material_quantity=float(data.get("materialQuantity") or 0.0),
+        material_unit=data.get("materialUnit") or "ml",
         is_online_bookable=bool(data.get("isOnlineBookable", True)),
         is_active=bool(data.get("isActive", True)),
         popular=bool(data.get("popular", False)),
@@ -1125,6 +1160,10 @@ def update_service(
         elif k == "bufferMinutes": service.buffer_minutes = int(v)
         elif k == "price": service.price = float(v)
         elif k == "description": service.description = v
+        elif k in ("materialUsed", "averageMaterialUsed"): service.material_used = str(v)
+        elif k == "materialItemId": service.material_item_id = str(v) if v else None
+        elif k == "materialQuantity": service.material_quantity = float(v or 0.0)
+        elif k == "materialUnit": service.material_unit = str(v or "ml")
         elif k == "isOnlineBookable": service.is_online_bookable = bool(v)
         elif k == "isActive": service.is_active = bool(v)
         elif k == "popular": service.popular = bool(v)
@@ -1706,6 +1745,20 @@ def create_invoice(
                 )
             txn_ref = data.get("transactionReference") or data.get("upiReference") or f"BC-TXN-UPI-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
             verification_method = "manual_receptionist_upi_verification"
+        elif payment_method == "WALLET":
+            if not cust:
+                raise HTTPException(status_code=400, detail="Wallet payment requires a registered salon customer.")
+            current_wallet = float(cust.wallet_balance or 0.0)
+            if current_wallet < grand_total:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient wallet balance. Customer has ₹{current_wallet:,.2f}, required: ₹{grand_total:,.2f}."
+                )
+            cust.wallet_balance = round(current_wallet - grand_total, 2)
+            amount_received = grand_total
+            change_given = 0.0
+            txn_ref = data.get("transactionReference") or f"BC-TXN-WALLET-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+            verification_method = "prepaid_customer_wallet"
         else:
             txn_ref = data.get("transactionReference") or f"BC-TXN-{payment_method}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
             verification_method = "manual_counter"
@@ -1753,8 +1806,9 @@ def create_invoice(
             cust.loyalty_points += int(grand_total * 0.05)
             cust.last_visit_date = datetime.utcnow().strftime("%Y-%m-%d")
 
-        # Automatically deduct retail inventory and log in inventory ledger
+        # Automatically deduct retail inventory and service consumable material, and log in inventory ledger
         for itm in items:
+            # 1. Retail Product sale decrement
             if itm.get("type") == "product" and itm.get("id"):
                 inv_item = db.query(InventoryModel).filter(
                     InventoryModel.id == itm["id"],
@@ -1775,6 +1829,35 @@ def create_invoice(
                         performed_by=data.get("staffName") or "POS Checkout"
                     )
                     db.add(ledger)
+
+            # 2. Service consumable material auto-deduction (Stock Monitor)
+            elif itm.get("type") != "product":
+                srv = None
+                if itm.get("id"):
+                    srv = db.query(ServiceModel).filter(ServiceModel.id == itm["id"], ServiceModel.salon_id == salon_id).first()
+                if not srv and itm.get("name"):
+                    srv = db.query(ServiceModel).filter(ServiceModel.name == itm["name"], ServiceModel.salon_id == salon_id).first()
+
+                if srv and srv.material_item_id:
+                    stock_item = db.query(InventoryModel).filter(
+                        InventoryModel.id == srv.material_item_id,
+                        InventoryModel.salon_id == salon_id
+                    ).first()
+                    if stock_item:
+                        qty_to_deduct = max(1, int(srv.material_quantity or 1))
+                        prev_stock = stock_item.current_stock
+                        stock_item.current_stock = max(0, stock_item.current_stock - qty_to_deduct)
+                        ledger = InventoryLedgerModel(
+                            salon_id=salon_id,
+                            item_id=stock_item.id,
+                            item_name=stock_item.name,
+                            change_qty=-qty_to_deduct,
+                            previous_stock=prev_stock,
+                            new_stock=stock_item.current_stock,
+                            reason=f"service_consumption_{inv_number}",
+                            performed_by=f"Service: {srv.name} ({data.get('staffName') or 'Staff'})"
+                        )
+                        db.add(ledger)
 
         # Update active cash register shift if open
         active_shift = db.query(CashRegisterShiftModel).filter(
