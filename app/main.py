@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -59,6 +60,16 @@ def ensure_schema_compatibility():
                         conn.execute(text("ALTER TABLE branches ADD COLUMN IF NOT EXISTS code VARCHAR(32)"))
                     else:
                         conn.execute(text("ALTER TABLE branches ADD COLUMN code VARCHAR(32)"))
+
+        # Cash register shifts branch_id
+        if "cash_register_shifts" in tables:
+            crs_cols = [c["name"] for c in inspector.get_columns("cash_register_shifts")]
+            if "branch_id" not in crs_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE cash_register_shifts ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64)"))
+                    else:
+                        conn.execute(text("ALTER TABLE cash_register_shifts ADD COLUMN branch_id VARCHAR(64)"))
 
         # Salons table columns upgrade
         if "salons" in tables:
@@ -202,9 +213,20 @@ app = FastAPI(
 )
 
 # CORS configuration
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
+allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+if not allowed_origins:
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "https://billcareweb.vercel.app",
+        "https://billcaresolution.com",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*(railway\.app|vercel\.app|billcaresolution\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

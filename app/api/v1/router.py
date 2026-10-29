@@ -345,7 +345,9 @@ def forgot_password(payload: Dict[str, Any] = Body(...), db: Session = Depends(g
             {"sub": user.id, "email": user.email, "purpose": "password_reset"},
             expires_delta=timedelta(hours=1),
         )
-        response["reset_token"] = reset_token
+        # Security: Never return reset tokens in production HTTP payloads
+        if os.getenv("ALLOW_DEV_RESET_TOKEN", "").lower() == "true":
+            response["reset_token"] = reset_token
     return response
 
 
@@ -435,13 +437,12 @@ def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depen
     db.add(otp_record)
     db.commit()
 
-    is_dev = os.getenv("ENVIRONMENT", "development") != "production"
     response_payload = {
         "success": True,
         "message": f"6-digit OTP code sent to your registered number. Valid for 5 minutes.",
     }
-    # Dev mode helper for automated tests and local verification without SMS credits
-    if is_dev:
+    # Security: dev_otp only exposed if explicitly activated via ALLOW_DEV_OTP for test runners
+    if os.getenv("ALLOW_DEV_OTP", "").lower() == "true":
         response_payload["dev_otp"] = otp_code
 
     return response_payload

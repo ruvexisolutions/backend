@@ -687,6 +687,7 @@ class CashRegisterShiftModel(Base):
 
     id = Column(String(64), primary_key=True, default=lambda: f"shift_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    branch_id = Column(String(64), nullable=True)
     opened_by_user_id = Column(String(64), nullable=True)
     opened_by_name = Column(String(128), default="Front Desk Cashier")
     closed_by_user_id = Column(String(64), nullable=True)
@@ -708,6 +709,7 @@ class CashRegisterShiftModel(Base):
         return {
             "id": self.id,
             "salonId": self.salon_id,
+            "branchId": self.branch_id,
             "openedByUserId": self.opened_by_user_id,
             "openedByName": self.opened_by_name,
             "closedByUserId": self.closed_by_user_id,

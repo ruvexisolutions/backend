@@ -4,7 +4,11 @@ from typing import Optional, Dict, Any
 import bcrypt
 from jose import jwt, JWTError
 
-SECRET_KEY = os.getenv("JWT_SECRET", "billcare-enterprise-secret-key-production-ready-2026")
+DEFAULT_INSECURE_SECRET = "billcare-enterprise-secret-key-production-ready-2026"
+SECRET_KEY = os.getenv("JWT_SECRET", DEFAULT_INSECURE_SECRET)
+
+if os.getenv("ENVIRONMENT") == "production" and SECRET_KEY == DEFAULT_INSECURE_SECRET:
+    print("[CRITICAL SECURITY WARNING] JWT_SECRET environment variable is not configured! Please set a unique 64-character secret on Railway.")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 7
 
