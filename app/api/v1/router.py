@@ -534,7 +534,23 @@ def create_receptionist_invitation(
 
     existing_user = db.query(UserModel).filter(UserModel.email.ilike(email)).first()
     if existing_user:
-        raise HTTPException(status_code=400, detail="An account with this email address already exists")
+        raise HTTPException(
+            status_code=400,
+            detail="This receptionist is already registered to a salon. Each receptionist can strictly belong to only ONE salon."
+        )
+
+    # Prevent simultaneous invitation from another salon (strict 1 receptionist = 1 salon rule)
+    active_other_invite = db.query(InvitationModel).filter(
+        InvitationModel.email.ilike(email),
+        InvitationModel.is_accepted == False,
+        InvitationModel.expires_at >= datetime.utcnow(),
+        InvitationModel.salon_id != salon.id
+    ).first()
+    if active_other_invite:
+        raise HTTPException(
+            status_code=400,
+            detail="This receptionist has an active pending invitation to another salon. Each receptionist can strictly belong to only ONE salon."
+        )
 
     if branch_id:
         branch_obj = db.query(BranchModel).filter(
@@ -620,6 +636,13 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
     salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
     if not salon:
         raise HTTPException(status_code=404, detail="Salon workspace not found")
+
+    existing_user = db.query(UserModel).filter(UserModel.email.ilike(invitation.email)).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=400,
+            detail="This account is already registered to a salon. Each receptionist can strictly belong to only one salon."
+        )
 
     new_user = UserModel(
         id=f"usr_{uuid.uuid4().hex[:12]}",
