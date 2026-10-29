@@ -12,6 +12,15 @@ def ensure_schema_compatibility():
         inspector = inspect(engine)
         tables = inspector.get_table_names()
 
+        # Users role check constraint compatibility
+        if "users" in tables:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check"))
+                    conn.execute(text("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('SALON_MANAGER', 'SALON_RECEPTIONIST', 'owner', 'manager', 'receptionist', 'admin', 'MASTER_ADMIN'))"))
+            except Exception as ex:
+                print(f"[Users Check Constraint Migration] {ex}")
+
         # Customers wallet_balance
         if "customers" in tables:
             cust_cols = [c["name"] for c in inspector.get_columns("customers")]
@@ -43,6 +52,8 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         seed_database(db)
+    except Exception as e:
+        print(f"[Seed Graceful Catch] {e}")
     finally:
         db.close()
     yield

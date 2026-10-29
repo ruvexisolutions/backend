@@ -204,58 +204,62 @@ def seed_database(db: Session):
     except Exception:
         pass
 
-    # Ensure flagship owner account has normalized role and valid bcrypt hash
-    owner_user = db.query(UserModel).filter(UserModel.email == "owner@billcare.io").first()
-    if owner_user:
-        owner_user.role = "SALON_MANAGER"
-        owner_user.phone = "+919845011223"
-        if not owner_user.password_hash or not owner_user.password_hash.startswith("$2b$"):
-            owner_user.password_hash = hash_password("billcare2026")
-        db.commit()
+    try:
+        # Ensure flagship owner account has normalized role and valid bcrypt hash
+        owner_user = db.query(UserModel).filter(UserModel.email == "owner@billcare.io").first()
+        if owner_user:
+            owner_user.role = "SALON_MANAGER"
+            owner_user.phone = "+919845011223"
+            if not owner_user.password_hash or not owner_user.password_hash.startswith("$2b$"):
+                owner_user.password_hash = hash_password("billcare2026")
+            db.commit()
 
-    # Ensure manager account exists for role testing
-    manager_user = db.query(UserModel).filter(UserModel.email == "manager@billcare.io").first()
-    if not manager_user:
-        manager_user = UserModel(
-            id="usr_billcare_manager",
-            salon_id=DEFAULT_SALON_ID,
-            name="Kavita Rao",
-            email="manager@billcare.io",
-            phone="+919845033445",
-            role="SALON_MANAGER",
-            avatar="K",
-            password_hash=hash_password("billcare2026"),
-        )
-        db.add(manager_user)
-        db.commit()
-    else:
-        manager_user.role = "SALON_MANAGER"
-        manager_user.phone = "+919845033445"
-        if not manager_user.password_hash or not manager_user.password_hash.startswith("$2b$"):
-            manager_user.password_hash = hash_password("billcare2026")
-        db.commit()
+        # Ensure manager account exists for role testing
+        manager_user = db.query(UserModel).filter(UserModel.email == "manager@billcare.io").first()
+        if not manager_user:
+            manager_user = UserModel(
+                id="usr_billcare_manager",
+                salon_id=DEFAULT_SALON_ID,
+                name="Kavita Rao",
+                email="manager@billcare.io",
+                phone="+919845033445",
+                role="SALON_MANAGER",
+                avatar="K",
+                password_hash=hash_password("billcare2026"),
+            )
+            db.add(manager_user)
+            db.commit()
+        else:
+            manager_user.role = "SALON_MANAGER"
+            manager_user.phone = "+919845033445"
+            if not manager_user.password_hash or not manager_user.password_hash.startswith("$2b$"):
+                manager_user.password_hash = hash_password("billcare2026")
+            db.commit()
 
-    # Ensure receptionist account exists for role testing
-    reception_user = db.query(UserModel).filter(UserModel.email == "reception@billcare.io").first()
-    if not reception_user:
-        reception_user = UserModel(
-            id="usr_billcare_receptionist",
-            salon_id=DEFAULT_SALON_ID,
-            name="Ananya Sen",
-            email="reception@billcare.io",
-            phone="+919845055667",
-            role="SALON_RECEPTIONIST",
-            avatar="A",
-            password_hash=hash_password("billcare2026"),
-        )
-        db.add(reception_user)
-        db.commit()
-    else:
-        reception_user.role = "SALON_RECEPTIONIST"
-        reception_user.phone = "+919845055667"
-        if not reception_user.password_hash or not reception_user.password_hash.startswith("$2b$"):
-            reception_user.password_hash = hash_password("billcare2026")
-        db.commit()
+        # Ensure receptionist account exists for role testing
+        reception_user = db.query(UserModel).filter(UserModel.email == "reception@billcare.io").first()
+        if not reception_user:
+            reception_user = UserModel(
+                id="usr_billcare_receptionist",
+                salon_id=DEFAULT_SALON_ID,
+                name="Ananya Sen",
+                email="reception@billcare.io",
+                phone="+919845055667",
+                role="SALON_RECEPTIONIST",
+                avatar="A",
+                password_hash=hash_password("billcare2026"),
+            )
+            db.add(reception_user)
+            db.commit()
+        else:
+            reception_user.role = "SALON_RECEPTIONIST"
+            reception_user.phone = "+919845055667"
+            if not reception_user.password_hash or not reception_user.password_hash.startswith("$2b$"):
+                reception_user.password_hash = hash_password("billcare2026")
+            db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[Seed Notice] Test user creation bypassed or constraint enforced: {e}")
 
     now = datetime.utcnow()
     trial_end = now + timedelta(days=7)
