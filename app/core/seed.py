@@ -20,17 +20,26 @@ from .security import hash_password
 DEFAULT_SALON_ID = "sln_billcare_flagship"
 
 def seed_database(db: Session):
-    # Ensure salon table has upi_id, bank details, and trial columns
+    # Idempotent database seeding for development and demo environments
     try:
         from sqlalchemy import text
+        bind = db.get_bind()
+        is_postgres = "postgres" in (bind.dialect.name.lower() if bind else "")
+        dt_type = "TIMESTAMPTZ" if is_postgres else "DATETIME"
+        bool_type = "BOOLEAN"
+        false_val = "FALSE" if is_postgres else "0"
+        true_val = "TRUE" if is_postgres else "1"
+
+        # Check existing columns on salons before altering
         for col, col_type in [
-            ("upi_id", "VARCHAR(128) DEFAULT 'billcare.pos@icici'"),
+            ("upi_id", "VARCHAR(128)"),
+            ("logo", "VARCHAR(512) DEFAULT '/logo.png'"),
             ("bank_account_name", "VARCHAR(128)"),
             ("bank_account_number", "VARCHAR(64)"),
             ("bank_ifsc", "VARCHAR(32)"),
             ("bank_name", "VARCHAR(128)"),
-            ("trial_started_at", "DATETIME"),
-            ("trial_ends_at", "DATETIME"),
+            ("trial_started_at", dt_type),
+            ("trial_ends_at", dt_type),
             ("subscription_status", "VARCHAR(32) DEFAULT 'trial'"),
             ("subscription_plan", "VARCHAR(32) DEFAULT 'trial'"),
             ("whatsapp_phone_number_id", "VARCHAR(128)"),
@@ -40,17 +49,20 @@ def seed_database(db: Session):
             ("whatsapp_verified_name", "VARCHAR(128)"),
             ("whatsapp_quality_rating", "VARCHAR(32) DEFAULT 'GREEN'"),
             ("whatsapp_status", "VARCHAR(32) DEFAULT 'not_connected'"),
-            ("whatsapp_webhook_verified", "BOOLEAN DEFAULT 0"),
-            ("whatsapp_last_tested_at", "DATETIME"),
+            ("whatsapp_webhook_verified", f"{bool_type} DEFAULT {false_val}"),
+            ("whatsapp_last_tested_at", dt_type),
             ("whatsapp_error_message", "TEXT"),
             ("whatsapp_templates_status", "VARCHAR(64) DEFAULT 'APPROVED (3 Active)'"),
             ("upi_payee_name", "VARCHAR(128)"),
-            ("upi_enabled", "BOOLEAN DEFAULT 0"),
-            ("cash_enabled", "BOOLEAN DEFAULT 1"),
+            ("upi_enabled", f"{bool_type} DEFAULT {false_val}"),
+            ("cash_enabled", f"{bool_type} DEFAULT {true_val}"),
             ("payment_instructions", "TEXT"),
         ]:
             try:
-                db.execute(text(f"ALTER TABLE salons ADD COLUMN {col} {col_type}"))
+                if is_postgres:
+                    db.execute(text(f"ALTER TABLE salons ADD COLUMN IF NOT EXISTS {col} {col_type}"))
+                else:
+                    db.execute(text(f"ALTER TABLE salons ADD COLUMN {col} {col_type}"))
                 db.commit()
             except Exception:
                 db.rollback()
@@ -204,6 +216,12 @@ def seed_database(db: Session):
     except Exception:
         pass
 
+    # Check if default salon exists. If it was removed by the user, do not recreate or seed dummy accounts.
+    existing_salon = db.query(SalonModel).filter(SalonModel.id == DEFAULT_SALON_ID).first()
+    if not existing_salon:
+        # Clean production mode: no dummy salon, real salons are registered dynamically
+        return
+
     try:
         # Ensure flagship owner account has normalized role and valid bcrypt hash
         owner_user = db.query(UserModel).filter(UserModel.email == "owner@billcare.io").first()
@@ -264,7 +282,6 @@ def seed_database(db: Session):
     now = datetime.utcnow()
     trial_end = now + timedelta(days=7)
 
-    existing_salon = db.query(SalonModel).filter(SalonModel.id == DEFAULT_SALON_ID).first()
     if existing_salon:
         if not existing_salon.trial_started_at:
             existing_salon.trial_started_at = now
