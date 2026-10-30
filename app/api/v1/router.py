@@ -753,6 +753,85 @@ def upgrade_subscription(
     }
 
 
+@router.post("/subscription/create-order", tags=["Subscription"])
+def create_subscription_order(
+    payload: Dict[str, Any] = Body(default={}),
+    context: tuple[UserModel, SalonModel] = Depends(require_salon_manager)
+):
+    """
+    Creates a Razorpay checkout order strictly for BillCare Platform SaaS Subscriptions.
+    (Pro: ₹3,499/mo, Enterprise: ₹8,999/mo).
+    """
+    user, salon = context
+    plan = str(payload.get("plan", "pro")).lower()
+    if plan not in ("pro", "enterprise"):
+        plan = "pro"
+
+    order_result = razorpay_service.create_subscription_order(
+        salon_id=salon.id,
+        salon_name=salon.name,
+        plan=plan,
+        manager_email=user.email
+    )
+
+    if not order_result.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to initialize Razorpay subscription order: {order_result.get('error')}"
+        )
+
+    return {
+        "success": True,
+        "order_id": order_result["order_id"],
+        "amount": order_result["amount"],
+        "currency": "INR",
+        "key_id": order_result["key_id"],
+        "plan": plan,
+        "salon_name": salon.name,
+        "manager_name": user.name,
+        "manager_email": user.email,
+        "manager_phone": user.phone or "",
+        "is_live": order_result.get("is_live", False),
+        "notice": order_result.get("notice")
+    }
+
+
+@router.post("/subscription/verify-payment", tags=["Subscription"])
+def verify_subscription_payment(
+    payload: Dict[str, Any] = Body(...),
+    context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
+    db: Session = Depends(get_db)
+):
+    """
+    Verifies Razorpay HMAC signature for BillCare platform subscription and activates paid plan.
+    """
+    _, salon = context
+    order_id = str(payload.get("razorpay_order_id", ""))
+    payment_id = str(payload.get("razorpay_payment_id", ""))
+    signature = str(payload.get("razorpay_signature", ""))
+    plan = str(payload.get("plan", "pro")).lower()
+
+    if not order_id or not payment_id:
+        raise HTTPException(status_code=400, detail="Missing razorpay_order_id or razorpay_payment_id")
+
+    is_valid = razorpay_service.verify_payment_signature(order_id, payment_id, signature)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Invalid Razorpay subscription payment signature")
+
+    salon.subscription_status = "active"
+    salon.subscription_plan = plan if plan in ("pro", "enterprise") else "pro"
+    salon.trial_ends_at = None
+    db.commit()
+    db.refresh(salon)
+
+    return {
+        "success": True,
+        "message": f"BillCare {salon.subscription_plan.upper()} subscription activated successfully!",
+        "payment_id": payment_id,
+        "salon": salon.to_dict()
+    }
+
+
 # ============================================================================
 # Salon Profile & Business Settings (Manager Only)
 # ============================================================================
@@ -2987,7 +3066,7 @@ def verify_razorpay_payment(
 
 @router.post("/payments/webhook", tags=["Payments"])
 async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
-    """Handles incoming Razorpay Webhook events (e.g. payment.captured)."""
+    """Handles incoming Razorpay Webhook events (Platform SaaS subscriptions and renewals)."""
     body_bytes = await request.body()
     signature = request.headers.get("X-Razorpay-Signature", "")
 
@@ -2998,11 +3077,26 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
         event_data = json.loads(body_bytes.decode("utf-8"))
         event_type = event_data.get("event")
 
-        if event_type == "payment.captured":
-            payment_entity = event_data.get("payload", {}).get("payment", {}).get("entity", {})
+        if event_type in ("payment.captured", "order.paid", "subscription.charged"):
+            payment_entity = event_data.get("payload", {}).get("payment", {}).get("entity", {}) or \
+                             event_data.get("payload", {}).get("order", {}).get("entity", {})
             notes = payment_entity.get("notes", {})
+
+            # 1. BillCare Platform SaaS Subscription Auto-Activation
+            if notes.get("type") == "billcare_platform_subscription":
+                salon_id = notes.get("salon_id")
+                plan = notes.get("plan", "pro")
+                if salon_id:
+                    target_salon = db.query(SalonModel).filter(SalonModel.id == salon_id).first()
+                    if target_salon:
+                        target_salon.subscription_status = "active"
+                        target_salon.subscription_plan = plan
+                        target_salon.trial_ends_at = None
+                        db.commit()
+
+            # 2. Legacy / External invoice reconciliation fallback
             invoice_id = notes.get("invoice_id") or notes.get("receipt")
-            if invoice_id:
+            if invoice_id and not invoice_id.startswith("sub_"):
                 inv = db.query(InvoiceModel).filter(InvoiceModel.id == invoice_id).first()
                 if inv:
                     inv.payment_method = "Razorpay Auto-Captured"

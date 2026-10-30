@@ -1,3 +1,9 @@
+# ============================================================================
+# BillCare Platform SaaS Subscription Service (Razorpay Integration)
+# Razorpay is used exclusively for BillCare platform subscriptions (B2B SaaS).
+# Salon client billing uses direct-to-salon UPI (0% fees) and cash/POS terminals.
+# ============================================================================
+
 import os
 import hmac
 import hashlib
@@ -13,7 +19,16 @@ RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
 RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
 
+PLAN_PRICES_INR = {
+    "pro": 3499.0,
+    "enterprise": 8999.0,
+}
+
 class RazorpayService:
+    """
+    Handles BillCare SaaS platform subscription orders, checkout verification,
+    and webhook events. Razorpay is dedicated exclusively to platform subscription revenue.
+    """
     def __init__(self):
         self.key_id = os.getenv("RAZORPAY_KEY_ID", "")
         self.key_secret = os.getenv("RAZORPAY_KEY_SECRET", "")
@@ -25,11 +40,74 @@ class RazorpayService:
         else:
             self.client = None
 
+    def get_plan_price(self, plan: str) -> float:
+        return PLAN_PRICES_INR.get(plan.lower(), 3499.0)
+
+    def create_subscription_order(
+        self,
+        salon_id: str,
+        salon_name: str,
+        plan: str,
+        manager_email: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Creates a Razorpay order dedicated to a BillCare platform subscription.
+        Amount is converted to paise for Razorpay.
+        """
+        amount = self.get_plan_price(plan)
+        amount_in_paise = int(round(amount * 100))
+        receipt = f"sub_{salon_id[:12]}_{uuid.uuid4().hex[:6]}"
+
+        notes = {
+            "salon_id": salon_id,
+            "salon_name": salon_name,
+            "plan": plan.lower(),
+            "type": "billcare_platform_subscription",
+            "manager_email": manager_email or "",
+        }
+
+        if self.is_configured and self.client:
+            try:
+                order_data = {
+                    "amount": amount_in_paise,
+                    "currency": "INR",
+                    "receipt": receipt,
+                    "payment_capture": 1,
+                    "notes": notes,
+                }
+                order = self.client.order.create(data=order_data)
+                return {
+                    "success": True,
+                    "order_id": order.get("id"),
+                    "amount": amount,
+                    "currency": "INR",
+                    "key_id": self.key_id,
+                    "plan": plan.lower(),
+                    "is_live": True,
+                    "raw": order
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "is_live": True
+                }
+
+        # Sandbox / Fallback for local dev or when keys not yet provisioned
+        mock_order_id = f"order_sub_{uuid.uuid4().hex[:14]}"
+        return {
+            "success": True,
+            "order_id": mock_order_id,
+            "amount": amount,
+            "currency": "INR",
+            "key_id": self.key_id or "rzp_test_billcare_sandbox",
+            "plan": plan.lower(),
+            "is_live": False,
+            "notice": "Operating in BillCare Platform Subscription Sandbox. Add live RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET to backend/.env."
+        }
+
     def create_order(self, amount: float, receipt: str, notes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Creates a standard Razorpay Order.
-        Amount must be passed in Indian Rupees (INR) and is converted to paise.
-        """
+        """Generic order creation helper for backward compatibility."""
         amount_in_paise = int(round(amount * 100))
         if self.is_configured and self.client:
             try:
@@ -37,7 +115,7 @@ class RazorpayService:
                     "amount": amount_in_paise,
                     "currency": "INR",
                     "receipt": receipt,
-                    "payment_capture": 1,  # Auto-capture payment
+                    "payment_capture": 1,
                     "notes": notes or {},
                 }
                 order = self.client.order.create(data=order_data)
@@ -57,7 +135,6 @@ class RazorpayService:
                     "is_live": True
                 }
 
-        # Sandbox / Offline Fallback if keys are pending configuration
         mock_order_id = f"order_{uuid.uuid4().hex[:14]}"
         return {
             "success": True,
@@ -66,99 +143,6 @@ class RazorpayService:
             "currency": "INR",
             "key_id": self.key_id or "rzp_test_billcare_sandbox",
             "is_live": False,
-            "notice": "Operating in BillCare Razorpay Sandbox Mode. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend/.env for live transactions."
-        }
-
-    def create_payment_link(
-        self,
-        amount: float,
-        customer_name: str,
-        customer_phone: str,
-        customer_email: Optional[str],
-        description: str,
-        receipt: str
-    ) -> Dict[str, Any]:
-        """
-        Generates a live Razorpay Instant Payment Link with SMS & WhatsApp notification flags.
-        """
-        amount_in_paise = int(round(amount * 100))
-        # Normalize phone number to 10 digits
-        clean_phone = "".join(filter(str.isdigit, customer_phone))[-10:] if customer_phone else ""
-
-        if self.is_configured and self.client:
-            try:
-                link_data = {
-                    "amount": amount_in_paise,
-                    "currency": "INR",
-                    "accept_partial": False,
-                    "description": description,
-                    "customer": {
-                        "name": customer_name,
-                        "contact": f"+91{clean_phone}" if clean_phone else "",
-                        "email": customer_email or "billing@billcare.io"
-                    },
-                    "notify": {
-                        "sms": True,
-                        "email": bool(customer_email),
-                        "whatsapp": True
-                    },
-                    "reminder_enable": True,
-                    "notes": {"receipt": receipt},
-                }
-                res = self.client.payment_link.create(data=link_data)
-                return {
-                    "success": True,
-                    "link_id": res.get("id"),
-                    "short_url": res.get("short_url"),
-                    "status": res.get("status"),
-                    "is_live": True
-                }
-            except Exception as e:
-                return {
-                    "success": False,
-                    "error": str(e),
-                    "is_live": True
-                }
-
-        # Deterministic sandbox payment link
-        return {
-            "success": True,
-            "link_id": f"plink_{uuid.uuid4().hex[:12]}",
-            "short_url": f"https://rzp.io/i/{uuid.uuid4().hex[:7]}",
-            "status": "created",
-            "is_live": False,
-            "notice": "Simulated Razorpay Payment Link. Add live keys to backend/.env."
-        }
-
-    def generate_upi_qr(
-        self,
-        amount: float,
-        invoice_number: str,
-        salon_name: str = "BillCare Salon",
-        merchant_vpa: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Generates standard Indian NPCI UPI Intent String & QR Payload for Countertop POS tablets.
-        Supports PhonePe, Google Pay, Paytm, BHIM, CRED.
-        """
-        import urllib.parse
-        vpa = merchant_vpa or os.getenv("RAZORPAY_MERCHANT_VPA", "billcare.pos@icici")
-        amount_str = f"{amount:.2f}"
-        encoded_salon_name = urllib.parse.quote(salon_name)
-        encoded_note = urllib.parse.quote(f"Bill {invoice_number}")
-
-        # Standard NPCI UPI URI Scheme
-        upi_string = f"upi://pay?pa={vpa}&pn={encoded_salon_name}&tr={invoice_number}&am={amount_str}&cu=INR&tn={encoded_note}"
-        encoded_data = urllib.parse.quote(upi_string)
-
-        return {
-            "success": True,
-            "upi_intent": upi_string,
-            "amount": amount,
-            "invoice_number": invoice_number,
-            "merchant_vpa": vpa,
-            "salon_name": salon_name,
-            "qr_svg_url": f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data={encoded_data}"
         }
 
     def verify_payment_signature(self, order_id: str, payment_id: str, signature: str) -> bool:
