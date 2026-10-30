@@ -2516,6 +2516,29 @@ def confirm_invoice_payment(
     db.refresh(invoice)
     db.refresh(payment)
 
+    # Automated WhatsApp Receipt Dispatch
+    whatsapp_dispatched = False
+    clean_customer_phone = "".join(filter(str.isdigit, str(invoice.customer_phone or "")))
+    if clean_customer_phone and len(clean_customer_phone) >= 10:
+        if salon.whatsapp_status == "connected" and salon.whatsapp_access_token:
+            try:
+                import asyncio
+                asyncio.create_task(
+                    whatsapp_service.send_bill_notification(
+                        to_phone=clean_customer_phone,
+                        customer_name=invoice.customer_name or "Valued Client",
+                        invoice_number=invoice.invoice_number,
+                        total_amount=invoice.grand_total,
+                        items=items,
+                        salon_name=salon.name,
+                        phone_number_id=salon.whatsapp_phone_number_id,
+                        access_token=salon.whatsapp_access_token
+                    )
+                )
+                whatsapp_dispatched = True
+            except Exception as wa_err:
+                print(f"[Auto-WhatsApp Dispatch Notice] {wa_err}")
+
     return {
         "success": True,
         "message": f"Payment of ₹{invoice.grand_total:,.2f} via {payment_method} successfully confirmed.",
@@ -3390,12 +3413,12 @@ async def send_whatsapp_bill(
     Prevents duplicate messages via idempotency.
     """
     _, salon = context
-    to_phone = data.get("customerPhone", "")
-    customer_name = data.get("customerName", "Valued Client")
-    invoice_number = data.get("invoiceNumber", "INV-1001")
-    total_amount = float(data.get("totalAmount", 0))
+    to_phone = str(data.get("customerPhone") or data.get("to_phone") or data.get("phone") or "")
+    customer_name = str(data.get("customerName") or data.get("customer_name") or "Valued Client")
+    invoice_number = str(data.get("invoiceNumber") or data.get("invoice_number") or "INV-1001")
+    total_amount = float(data.get("totalAmount") or data.get("total_amount") or 0)
     items = data.get("items", [])
-    payment_link = data.get("paymentLink")
+    payment_link = data.get("paymentLink") or data.get("payment_link")
 
     idempotency_key = f"bill_{invoice_number}_{to_phone}"
 
