@@ -219,14 +219,15 @@ if not allowed_origins:
     allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://Ruvexiweb.vercel.app",
-        "https://Ruvexisolution.com",
+        "https://ruvexisolutions.com",
+        "https://www.ruvexisolutions.com",
+        "https://website-production-ruvexi.up.railway.app",
+        "https://ruvexi.up.railway.app",
     ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_origin_regex=r"https://.*(railway\.app|vercel\.app|Ruvexisolution\.com)",
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
