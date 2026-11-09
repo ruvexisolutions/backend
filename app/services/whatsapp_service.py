@@ -1,17 +1,17 @@
-import os
+﻿import os
 import httpx
 from typing import Dict, Any, Optional, List
 
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
-WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "billcare_meta_webhook_2026")
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
 META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v20.0")
 
 class WhatsAppCloudService:
     def __init__(self):
         self.phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
         self.access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
-        self.verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "billcare_meta_webhook_2026")
+        self.verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
         self.api_version = os.getenv("META_GRAPH_API_VERSION", "v20.0")
         self.is_configured = bool(self.phone_number_id and self.access_token)
 
@@ -127,7 +127,7 @@ class WhatsAppCloudService:
             return {
                 "success": True,
                 "is_live": False,
-                "verified_name": "BillCare Verified Atelier",
+                "verified_name": "Ruvexi Verified Atelier",
                 "display_phone_number": "+91 98450 11223",
                 "quality_rating": "GREEN",
                 "status": "connected",
@@ -165,28 +165,28 @@ class WhatsAppCloudService:
         """Returns verified salon message templates."""
         return [
             {
-                "name": "billcare_service_receipt",
+                "name": "Ruvexi_service_receipt",
                 "category": "UTILITY",
                 "language": "en_US",
                 "status": "APPROVED",
                 "description": "Instant GST Salon Bill with itemized breakdown and payment receipt link.",
             },
             {
-                "name": "billcare_appointment_confirmation",
+                "name": "Ruvexi_appointment_confirmation",
                 "category": "UTILITY",
                 "language": "en_US",
                 "status": "APPROVED",
                 "description": "Appointment booking confirmation with stylist and chair allocation.",
             },
             {
-                "name": "billcare_appointment_reminder",
+                "name": "Ruvexi_appointment_reminder",
                 "category": "UTILITY",
                 "language": "en_US",
                 "status": "APPROVED",
                 "description": "Automated 24h & 2h appointment reminder notifications.",
             },
             {
-                "name": "billcare_rebooking_touchup",
+                "name": "Ruvexi_rebooking_touchup",
                 "category": "MARKETING",
                 "language": "en_US",
                 "status": "APPROVED",
@@ -201,7 +201,7 @@ class WhatsAppCloudService:
         invoice_number: str,
         total_amount: float,
         items: List[Dict[str, Any]],
-        salon_name: str = "BillCare Luxury Salon",
+        salon_name: str = "Ruvexi Luxury Salon",
         payment_link: Optional[str] = None,
         phone_number_id: Optional[str] = None,
         access_token: Optional[str] = None
@@ -210,18 +210,18 @@ class WhatsAppCloudService:
         Formats and dispatches official GST Salon Invoice message with line-item breakdown
         and instant digital receipt / payment link.
         """
-        items_text = "\n".join([f"• {it.get('name', 'Service')} - ₹{it.get('price', 0):,.2f}" for it in items[:4]])
+        items_text = "\n".join([f"â€¢ {it.get('name', 'Service')} - â‚¹{it.get('price', 0):,.2f}" for it in items[:4]])
         if len(items) > 4:
-            items_text += f"\n• ... +{len(items) - 4} more items"
+            items_text += f"\nâ€¢ ... +{len(items) - 4} more items"
 
-        pay_text = f"\n\n💳 *Instant Payment / Receipt Link:*\n{payment_link}" if payment_link else ""
+        pay_text = f"\n\nðŸ’³ *Instant Payment / Receipt Link:*\n{payment_link}" if payment_link else ""
 
         message_body = (
-            f"✨ *Thank you for visiting {salon_name}, {customer_name}!* ✨\n\n"
-            f"🧾 *Invoice Details:*\n"
-            f"• Invoice ID: *#{invoice_number}*\n"
-            f"• Grand Total: *₹{total_amount:,.2f}*\n\n"
-            f"📋 *Summary of Services:*\n{items_text}"
+            f"âœ¨ *Thank you for visiting {salon_name}, {customer_name}!* âœ¨\n\n"
+            f"ðŸ§¾ *Invoice Details:*\n"
+            f"â€¢ Invoice ID: *#{invoice_number}*\n"
+            f"â€¢ Grand Total: *â‚¹{total_amount:,.2f}*\n\n"
+            f"ðŸ“‹ *Summary of Services:*\n{items_text}"
             f"{pay_text}\n\n"
             f"We hope you loved your experience today. Please let us know if you need anything!\n"
             f"Warm regards,\n*{salon_name} Team*"
@@ -241,19 +241,19 @@ class WhatsAppCloudService:
         service_name: str,
         staff_name: str,
         date_time: str,
-        salon_name: str = "BillCare Luxury Salon",
+        salon_name: str = "Ruvexi Luxury Salon",
         phone_number_id: Optional[str] = None,
         access_token: Optional[str] = None
     ) -> Dict[str, Any]:
         """Dispatches automated appointment reservation confirmation."""
         message_body = (
-            f"🗓️ *Booking Confirmed with {salon_name}!*\n\n"
+            f"ðŸ—“ï¸ *Booking Confirmed with {salon_name}!*\n\n"
             f"Hello {customer_name},\n"
             f"Your appointment is confirmed with our top specialist:\n\n"
-            f"💇 *Service:* {service_name}\n"
-            f"✂️ *Stylist / Specialist:* {staff_name}\n"
-            f"⏰ *Date & Time:* {date_time}\n"
-            f"📍 *Location:* {salon_name} Studio\n\n"
+            f"ðŸ’‡ *Service:* {service_name}\n"
+            f"âœ‚ï¸ *Stylist / Specialist:* {staff_name}\n"
+            f"â° *Date & Time:* {date_time}\n"
+            f"ðŸ“ *Location:* {salon_name} Studio\n\n"
             f"Need to reschedule or cancel? Reply to this message directly or call us.\n"
             f"We look forward to pampering you!"
         )
@@ -269,7 +269,7 @@ class WhatsAppCloudService:
         to_phone: str,
         customer_name: str,
         custom_message: str,
-        salon_name: str = "BillCare Luxury Salon",
+        salon_name: str = "Ruvexi Luxury Salon",
         phone_number_id: Optional[str] = None,
         access_token: Optional[str] = None
     ) -> Dict[str, Any]:

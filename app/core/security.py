@@ -1,10 +1,10 @@
-import os
+﻿import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 import bcrypt
 from jose import jwt, JWTError
 
-DEFAULT_INSECURE_SECRET = "billcare-enterprise-secret-key-production-ready-2026"
+DEFAULT_INSECURE_SECRET = "Ruvexi-enterprise-secret-key-production-ready-2026"
 SECRET_KEY = os.getenv("JWT_SECRET", DEFAULT_INSECURE_SECRET)
 
 if os.getenv("ENVIRONMENT") == "production" and SECRET_KEY == DEFAULT_INSECURE_SECRET:

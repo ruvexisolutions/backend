@@ -1,6 +1,6 @@
-# ============================================================================
-# BillCare Platform SaaS Subscription Service (Razorpay Integration)
-# Razorpay is used exclusively for BillCare platform subscriptions (B2B SaaS).
+﻿# ============================================================================
+# Ruvexi Platform SaaS Subscription Service (Razorpay Integration)
+# Razorpay is used exclusively for Ruvexi platform subscriptions (B2B SaaS).
 # Salon client billing uses direct-to-salon UPI (0% fees) and cash/POS terminals.
 # ============================================================================
 
@@ -26,7 +26,7 @@ PLAN_PRICES_INR = {
 
 class RazorpayService:
     """
-    Handles BillCare SaaS platform subscription orders, checkout verification,
+    Handles Ruvexi SaaS platform subscription orders, checkout verification,
     and webhook events. Razorpay is dedicated exclusively to platform subscription revenue.
     """
     def __init__(self):
@@ -51,7 +51,7 @@ class RazorpayService:
         manager_email: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Creates a Razorpay order dedicated to a BillCare platform subscription.
+        Creates a Razorpay order dedicated to a Ruvexi platform subscription.
         Amount is converted to paise for Razorpay.
         """
         amount = self.get_plan_price(plan)
@@ -62,7 +62,7 @@ class RazorpayService:
             "salon_id": salon_id,
             "salon_name": salon_name,
             "plan": plan.lower(),
-            "type": "billcare_platform_subscription",
+            "type": "Ruvexi_platform_subscription",
             "manager_email": manager_email or "",
         }
 
@@ -100,10 +100,10 @@ class RazorpayService:
             "order_id": mock_order_id,
             "amount": amount,
             "currency": "INR",
-            "key_id": self.key_id or "rzp_test_billcare_sandbox",
+            "key_id": self.key_id or "rzp_test_Ruvexi_sandbox",
             "plan": plan.lower(),
             "is_live": False,
-            "notice": "Operating in BillCare Platform Subscription Sandbox. Add live RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET to backend/.env."
+            "notice": "Operating in Ruvexi Platform Subscription Sandbox. Add live RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET to backend/.env."
         }
 
     def create_order(self, amount: float, receipt: str, notes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -141,7 +141,7 @@ class RazorpayService:
             "order_id": mock_order_id,
             "amount": amount,
             "currency": "INR",
-            "key_id": self.key_id or "rzp_test_billcare_sandbox",
+            "key_id": self.key_id or "rzp_test_Ruvexi_sandbox",
             "is_live": False,
         }
 

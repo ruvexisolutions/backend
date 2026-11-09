@@ -1,4 +1,4 @@
-import json
+﻿import json
 import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -22,7 +22,7 @@ class SalonModel(Base):
     slug = Column(String(128), unique=True, index=True)
     branch = Column(String(128), default="Flagship Studio")
     city = Column(String(128), default="Mumbai & Bengaluru")
-    currency = Column(String(10), default="₹")
+    currency = Column(String(10), default="â‚¹")
     chairs = Column(Integer, default=8)
     category = Column(String(128), default="Luxury Hair Studio & Aesthetic Spa")
     logo_url = Column(String(512), default="/logo.png")
@@ -30,7 +30,7 @@ class SalonModel(Base):
     gstin = Column(String(32), default="27AABCB1234F1Z8")
     auto_gst = Column(Boolean, default=True)
     phone = Column(String(32), default="+91 98450 11223")
-    email = Column(String(128), default="hello@billcare.io")
+    email = Column(String(128), default="hello@Ruvexi.io")
     address = Column(String(255), default="Suite 401, Crescent Galleria, Indiranagar")
     timing = Column(String(128), default="10:00 AM - 09:00 PM (All Days)")
     rating = Column(Float, default=4.9)
@@ -86,8 +86,8 @@ class SalonModel(Base):
             if not t:
                 return None
             if len(t) <= 10:
-                return "••••••••"
-            return f"{t[:4]}••••••••{t[-4:]}"
+                return "â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
+            return f"{t[:4]}â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢{t[-4:]}"
 
         return {
             "id": self.id,
@@ -658,7 +658,7 @@ class WhatsAppMessageModel(Base):
     recipient_phone = Column(String(32), nullable=False)
     customer_name = Column(String(128), default="Valued Client")
     message_type = Column(String(64), nullable=False) # 'bill_receipt', 'appointment_confirmation', 'appointment_reminder', 'retention_campaign'
-    template_name = Column(String(64), default="billcare_service_receipt")
+    template_name = Column(String(64), default="Ruvexi_service_receipt")
     meta_message_id = Column(String(128), nullable=True, index=True)
     status = Column(String(32), default="sent") # 'sent', 'delivered', 'read', 'failed'
     idempotency_key = Column(String(128), nullable=True, index=True)

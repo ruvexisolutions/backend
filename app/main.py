@@ -1,4 +1,4 @@
-import os
+﻿import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -206,7 +206,7 @@ async def lifespan(app: FastAPI):
     # Shutdown logic if any
 
 app = FastAPI(
-    title="BillCare Solution Platform API",
+    title="Ruvexi Solutions Platform API",
     description="Multi-tenant Salon & Spa Management SaaS Backend API (FastAPI Modular Monolith)",
     version="1.0.0",
     lifespan=lifespan,
@@ -219,14 +219,14 @@ if not allowed_origins:
     allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://billcareweb.vercel.app",
-        "https://billcaresolution.com",
+        "https://Ruvexiweb.vercel.app",
+        "https://Ruvexisolution.com",
     ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https://.*(railway\.app|vercel\.app|billcaresolution\.com)",
+    allow_origin_regex=r"https://.*(railway\.app|vercel\.app|Ruvexisolution\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -238,12 +238,12 @@ app.include_router(api_v1_router)
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Health check endpoint used by uptime monitors and container orchestration."""
-    return {"status": "healthy", "service": "billcare-api", "version": "1.0.0"}
+    return {"status": "healthy", "service": "Ruvexi-api", "version": "1.0.0"}
 
 @app.get("/", tags=["Root"])
 async def root():
     return {
-        "message": "Welcome to BillCare Solution API - The Operating System for Modern Salons & Spas",
+        "message": "Welcome to Ruvexi Solutions API - The Operating System for Modern Salons & Spas",
         "docs_url": "/docs",
         "version": "1.0.0",
         "endpoints": {

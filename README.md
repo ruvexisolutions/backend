@@ -1,8 +1,8 @@
-# BillCare Backend — FastAPI · SQLAlchemy · Railway
+﻿# Ruvexi Backend â€” FastAPI Â· SQLAlchemy Â· Railway
 
 Multi-tenant Salon & Spa Management SaaS backend built with **FastAPI**, deployable to **Railway** in one click.
 
-## 🚀 Deploy to Railway
+## ðŸš€ Deploy to Railway
 
 [![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new/template)
 
@@ -11,42 +11,42 @@ Multi-tenant Salon & Spa Management SaaS backend built with **FastAPI**, deploya
 3. Set the required environment variables (see `.env.example`)  
 4. Railway auto-detects `railway.toml` and starts the service
 
-## 🏗 Project Structure
+## ðŸ— Project Structure
 
 ```
 backend/
-├── app/
-│   ├── main.py               # FastAPI app entry point
-│   ├── api/v1/               # Versioned API routes
-│   ├── core/
-│   │   ├── database.py       # SQLAlchemy engine & session
-│   │   ├── models.py         # ORM models
-│   │   ├── security.py       # JWT auth
-│   │   └── seed.py           # Default data seeder
-│   ├── modules/              # Feature modules (appointments, POS, staff…)
-│   └── services/             # External integrations (Razorpay, WhatsApp)
-├── tests/                    # Pytest test suite
-├── .env.example              # Environment variable template
-├── railway.toml              # Railway deployment config
-├── Procfile                  # Process declaration (fallback)
-├── runtime.txt               # Python version pin
-└── requirements.txt          # Python dependencies
+â”œâ”€â”€ app/
+â”‚   â”œâ”€â”€ main.py               # FastAPI app entry point
+â”‚   â”œâ”€â”€ api/v1/               # Versioned API routes
+â”‚   â”œâ”€â”€ core/
+â”‚   â”‚   â”œâ”€â”€ database.py       # SQLAlchemy engine & session
+â”‚   â”‚   â”œâ”€â”€ models.py         # ORM models
+â”‚   â”‚   â”œâ”€â”€ security.py       # JWT auth
+â”‚   â”‚   â””â”€â”€ seed.py           # Default data seeder
+â”‚   â”œâ”€â”€ modules/              # Feature modules (appointments, POS, staffâ€¦)
+â”‚   â””â”€â”€ services/             # External integrations (Razorpay, WhatsApp)
+â”œâ”€â”€ tests/                    # Pytest test suite
+â”œâ”€â”€ .env.example              # Environment variable template
+â”œâ”€â”€ railway.toml              # Railway deployment config
+â”œâ”€â”€ Procfile                  # Process declaration (fallback)
+â”œâ”€â”€ runtime.txt               # Python version pin
+â””â”€â”€ requirements.txt          # Python dependencies
 ```
 
-## ⚙️ Environment Variables
+## âš™ï¸ Environment Variables
 
-Copy `.env.example` → `.env` and fill in your values.  
-In Railway, set variables under **Service → Variables**.
+Copy `.env.example` â†’ `.env` and fill in your values.  
+In Railway, set variables under **Service â†’ Variables**.
 
 | Variable | Required | Description |
 |---|---|---|
-| `DATABASE_URL` | ✅ | PostgreSQL connection URI (auto-set by Railway PostgreSQL plugin) |
-| `JWT_SECRET` | ✅ | Long random string for signing JWTs |
+| `DATABASE_URL` | âœ… | PostgreSQL connection URI (auto-set by Railway PostgreSQL plugin) |
+| `JWT_SECRET` | âœ… | Long random string for signing JWTs |
 | `RAZORPAY_KEY_ID` | Optional | Razorpay API key |
 | `RAZORPAY_KEY_SECRET` | Optional | Razorpay API secret |
 | `WHATSAPP_ACCESS_TOKEN` | Optional | Meta WhatsApp Cloud API token |
 
-## 🏃 Local Development
+## ðŸƒ Local Development
 
 ```bash
 cd backend
@@ -63,13 +63,13 @@ uvicorn app.main:app --reload
 
 API docs available at: `http://localhost:8000/docs`
 
-## 🧪 Running Tests
+## ðŸ§ª Running Tests
 
 ```bash
 pytest tests/ -v
 ```
 
-## 📡 API Endpoints
+## ðŸ“¡ API Endpoints
 
 | Endpoint | Description |
 |---|---|

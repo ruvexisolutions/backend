@@ -1,4 +1,4 @@
-import json
+﻿import json
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from .models import (
@@ -17,7 +17,7 @@ from .models import (
 
 from .security import hash_password
 
-DEFAULT_SALON_ID = "sln_billcare_flagship"
+DEFAULT_SALON_ID = "sln_Ruvexi_flagship"
 
 def seed_database(db: Session):
     # Idempotent database seeding for development and demo environments
@@ -133,7 +133,7 @@ def seed_database(db: Session):
                     recipient_phone VARCHAR(32) NOT NULL,
                     customer_name VARCHAR(128) DEFAULT 'Valued Client',
                     message_type VARCHAR(64) NOT NULL,
-                    template_name VARCHAR(64) DEFAULT 'billcare_service_receipt',
+                    template_name VARCHAR(64) DEFAULT 'Ruvexi_service_receipt',
                     meta_message_id VARCHAR(128),
                     status VARCHAR(32) DEFAULT 'sent',
                     idempotency_key VARCHAR(128),
@@ -224,26 +224,26 @@ def seed_database(db: Session):
 
     try:
         # Ensure flagship owner account has normalized role and valid bcrypt hash
-        owner_user = db.query(UserModel).filter(UserModel.email == "owner@billcare.io").first()
+        owner_user = db.query(UserModel).filter(UserModel.email == "owner@Ruvexi.io").first()
         if owner_user:
             owner_user.role = "SALON_MANAGER"
             owner_user.phone = "+919845011223"
             if not owner_user.password_hash or not owner_user.password_hash.startswith("$2b$"):
-                owner_user.password_hash = hash_password("billcare2026")
+                owner_user.password_hash = hash_password("Ruvexi2026")
             db.commit()
 
         # Ensure manager account exists for role testing
-        manager_user = db.query(UserModel).filter(UserModel.email == "manager@billcare.io").first()
+        manager_user = db.query(UserModel).filter(UserModel.email == "manager@Ruvexi.io").first()
         if not manager_user:
             manager_user = UserModel(
-                id="usr_billcare_manager",
+                id="usr_Ruvexi_manager",
                 salon_id=DEFAULT_SALON_ID,
                 name="Kavita Rao",
-                email="manager@billcare.io",
+                email="manager@Ruvexi.io",
                 phone="+919845033445",
                 role="SALON_MANAGER",
                 avatar="K",
-                password_hash=hash_password("billcare2026"),
+                password_hash=hash_password("Ruvexi2026"),
             )
             db.add(manager_user)
             db.commit()
@@ -251,21 +251,21 @@ def seed_database(db: Session):
             manager_user.role = "SALON_MANAGER"
             manager_user.phone = "+919845033445"
             if not manager_user.password_hash or not manager_user.password_hash.startswith("$2b$"):
-                manager_user.password_hash = hash_password("billcare2026")
+                manager_user.password_hash = hash_password("Ruvexi2026")
             db.commit()
 
         # Ensure receptionist account exists for role testing
-        reception_user = db.query(UserModel).filter(UserModel.email == "reception@billcare.io").first()
+        reception_user = db.query(UserModel).filter(UserModel.email == "reception@Ruvexi.io").first()
         if not reception_user:
             reception_user = UserModel(
-                id="usr_billcare_receptionist",
+                id="usr_Ruvexi_receptionist",
                 salon_id=DEFAULT_SALON_ID,
                 name="Ananya Sen",
-                email="reception@billcare.io",
+                email="reception@Ruvexi.io",
                 phone="+919845055667",
                 role="SALON_RECEPTIONIST",
                 avatar="A",
-                password_hash=hash_password("billcare2026"),
+                password_hash=hash_password("Ruvexi2026"),
             )
             db.add(reception_user)
             db.commit()
@@ -273,7 +273,7 @@ def seed_database(db: Session):
             reception_user.role = "SALON_RECEPTIONIST"
             reception_user.phone = "+919845055667"
             if not reception_user.password_hash or not reception_user.password_hash.startswith("$2b$"):
-                reception_user.password_hash = hash_password("billcare2026")
+                reception_user.password_hash = hash_password("Ruvexi2026")
             db.commit()
     except Exception as e:
         db.rollback()
@@ -298,20 +298,20 @@ def seed_database(db: Session):
         if not existing_salon.upi_id:
             existing_salon.upi_id = "flagship@icici"
         if not existing_salon.upi_payee_name:
-            existing_salon.upi_payee_name = "BillCare Flagship Atelier"
+            existing_salon.upi_payee_name = "Ruvexi Flagship Atelier"
         db.commit()
         return
 
-    print("Seeding initial BillCare flagship salon and operational data...")
+    print("Seeding initial Ruvexi flagship salon and operational data...")
 
     # 1. Salon
     salon = SalonModel(
         id=DEFAULT_SALON_ID,
-        name="BillCare Premier Atelier & Spa",
-        slug="billcare-atelier",
+        name="Ruvexi Premier Atelier & Spa",
+        slug="Ruvexi-atelier",
         branch="Flagship Studio",
         city="Mumbai & Bengaluru",
-        currency="₹",
+        currency="â‚¹",
         chairs=8,
         category="Luxury Hair Studio & Aesthetic Spa",
         logo_url="/logo.png",
@@ -319,7 +319,7 @@ def seed_database(db: Session):
         gstin="27AABCB1234F1Z8",
         auto_gst=True,
         phone="+919845011223",
-        email="hello@billcare.io",
+        email="hello@Ruvexi.io",
         address="Suite 401, Crescent Galleria, Indiranagar",
         timing="10:00 AM - 09:00 PM (All Days)",
         rating=4.9,
@@ -333,14 +333,14 @@ def seed_database(db: Session):
 
     # 2. User (Default Salon Manager)
     owner = UserModel(
-        id="usr_billcare_owner",
+        id="usr_Ruvexi_owner",
         salon_id=DEFAULT_SALON_ID,
         name="Sunil Kumar",
-        email="owner@billcare.io",
+        email="owner@Ruvexi.io",
         phone="+919845011223",
         role="SALON_MANAGER",
         avatar="S",
-        password_hash=hash_password("billcare2026"),
+        password_hash=hash_password("Ruvexi2026"),
     )
     db.add(owner)
 

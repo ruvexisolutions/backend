@@ -1,11 +1,11 @@
-import os
+﻿import os
 import re
 import urllib.parse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 # Database URL: SQLite by default for zero-setup friction, or PostgreSQL/Supabase
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./billcare.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./Ruvexi.db")
 
 # Convert legacy 'postgres://' or standard 'postgresql://' to explicit 'postgresql+psycopg2://'
 if DATABASE_URL.startswith("postgres://"):

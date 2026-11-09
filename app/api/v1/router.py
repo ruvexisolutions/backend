@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import uuid
 import secrets
@@ -117,7 +117,7 @@ def get_current_user_and_salon(
     if not user or not salon:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication token required. Please sign in to your BillCare workspace."
+            detail="Authentication token required. Please sign in to your Ruvexi workspace."
         )
 
     # Server-side 7-day trial expiry lock
@@ -278,7 +278,7 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
         slug=f"{slug}-{uuid.uuid4().hex[:4]}",
         branch=salon_data.get("branch") or f"{salon_data.get('city', 'Flagship')} Studio",
         city=salon_data.get("city") or "Mumbai",
-        currency=salon_data.get("currency") or "₹",
+        currency=salon_data.get("currency") or "â‚¹",
         chairs=int(salon_data.get("chairs") or 6),
         category=salon_data.get("category") or "Hair & Beauty Atelier",
         gstin=salon_data.get("gstin") or "27AABCB9999F1Z1",
@@ -602,7 +602,7 @@ def get_invitation_details(token: str, db: Session = Depends(get_db)):
         "valid": True,
         "email": invitation.email,
         "role": invitation.role,
-        "salonName": salon.name if salon else "BillCare Studio",
+        "salonName": salon.name if salon else "Ruvexi Studio",
         "salonId": invitation.salon_id,
         "branchId": invitation.branch_id,
         "branchName": branch.name if branch else (salon.branch if salon else "Flagship Studio"),
@@ -759,8 +759,8 @@ def create_subscription_order(
     context: tuple[UserModel, SalonModel] = Depends(require_salon_manager)
 ):
     """
-    Creates a Razorpay checkout order strictly for BillCare Platform SaaS Subscriptions.
-    (Pro: ₹3,499/mo, Enterprise: ₹8,999/mo).
+    Creates a Razorpay checkout order strictly for Ruvexi Platform SaaS Subscriptions.
+    (Pro: â‚¹3,499/mo, Enterprise: â‚¹8,999/mo).
     """
     user, salon = context
     plan = str(payload.get("plan", "pro")).lower()
@@ -803,7 +803,7 @@ def verify_subscription_payment(
     db: Session = Depends(get_db)
 ):
     """
-    Verifies Razorpay HMAC signature for BillCare platform subscription and activates paid plan.
+    Verifies Razorpay HMAC signature for Ruvexi platform subscription and activates paid plan.
     """
     _, salon = context
     order_id = str(payload.get("razorpay_order_id", ""))
@@ -826,7 +826,7 @@ def verify_subscription_payment(
 
     return {
         "success": True,
-        "message": f"BillCare {salon.subscription_plan.upper()} subscription activated successfully!",
+        "message": f"Ruvexi {salon.subscription_plan.upper()} subscription activated successfully!",
         "payment_id": payment_id,
         "salon": salon.to_dict()
     }
@@ -1218,7 +1218,7 @@ def topup_customer_wallet(
     db.refresh(customer)
     return {
         "success": True,
-        "message": f"Added ₹{amount:,.2f} credit to {customer.name}'s wallet. New balance: ₹{customer.wallet_balance:,.2f}.",
+        "message": f"Added â‚¹{amount:,.2f} credit to {customer.name}'s wallet. New balance: â‚¹{customer.wallet_balance:,.2f}.",
         "customer": customer.to_dict()
     }
 
@@ -1827,7 +1827,7 @@ def create_invoice(
         ).first()
 
     if points_redeemed > 0 and cust:
-        # Validate customer has enough points: 1 point = ₹1
+        # Validate customer has enough points: 1 point = â‚¹1
         actual_redeem = min(points_redeemed, cust.loyalty_points)
         points_discount = min(float(actual_redeem), taxable_amount)
         points_redeemed = int(points_discount)
@@ -1886,7 +1886,7 @@ def create_invoice(
             if amount_received < grand_total:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Insufficient cash received. Final payable amount is ₹{grand_total:,.2f}, but only ₹{amount_received:,.2f} received."
+                    detail=f"Insufficient cash received. Final payable amount is â‚¹{grand_total:,.2f}, but only â‚¹{amount_received:,.2f} received."
                 )
             change_given = round(amount_received - grand_total, 2)
             txn_ref = data.get("transactionReference") or f"BC-TXN-CASH-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
@@ -1906,7 +1906,7 @@ def create_invoice(
             if current_wallet < grand_total:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Insufficient wallet balance. Customer has ₹{current_wallet:,.2f}, required: ₹{grand_total:,.2f}."
+                    detail=f"Insufficient wallet balance. Customer has â‚¹{current_wallet:,.2f}, required: â‚¹{grand_total:,.2f}."
                 )
             cust.wallet_balance = round(current_wallet - grand_total, 2)
             amount_received = grand_total
@@ -2142,7 +2142,7 @@ def refund_invoice(
     db.refresh(invoice)
     return {
         "success": True,
-        "message": f"Invoice {invoice.invoice_number} successfully refunded for ₹{refund_amount:,.2f}.",
+        "message": f"Invoice {invoice.invoice_number} successfully refunded for â‚¹{refund_amount:,.2f}.",
         "invoice": invoice.to_dict()
     }
 
@@ -2386,7 +2386,7 @@ def confirm_invoice_payment(
         if amount_received < invoice.grand_total:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient cash received. Final payable amount is ₹{invoice.grand_total:,.2f}, but only ₹{amount_received:,.2f} received."
+                detail=f"Insufficient cash received. Final payable amount is â‚¹{invoice.grand_total:,.2f}, but only â‚¹{amount_received:,.2f} received."
             )
 
         change_given = round(amount_received - invoice.grand_total, 2)
@@ -2541,7 +2541,7 @@ def confirm_invoice_payment(
 
     return {
         "success": True,
-        "message": f"Payment of ₹{invoice.grand_total:,.2f} via {payment_method} successfully confirmed.",
+        "message": f"Payment of â‚¹{invoice.grand_total:,.2f} via {payment_method} successfully confirmed.",
         "invoice": invoice.to_dict(),
         "payment": payment.to_dict(),
         "receipt": {
@@ -2920,13 +2920,13 @@ def close_register_shift(
     shift.cash_variance = variance
     shift.status = "closed"
     shift.closed_at = datetime.utcnow()
-    shift.notes = payload.get("notes") or f"Closed with variance of ₹{variance:,.2f}"
+    shift.notes = payload.get("notes") or f"Closed with variance of â‚¹{variance:,.2f}"
 
     db.commit()
     db.refresh(shift)
     return {
         "success": True,
-        "message": f"Register shift closed. Cash variance: ₹{variance:,.2f}",
+        "message": f"Register shift closed. Cash variance: â‚¹{variance:,.2f}",
         "shift": shift.to_dict()
     }
 
@@ -3105,8 +3105,8 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
                              event_data.get("payload", {}).get("order", {}).get("entity", {})
             notes = payment_entity.get("notes", {})
 
-            # 1. BillCare Platform SaaS Subscription Auto-Activation
-            if notes.get("type") == "billcare_platform_subscription":
+            # 1. Ruvexi Platform SaaS Subscription Auto-Activation
+            if notes.get("type") == "Ruvexi_platform_subscription":
                 salon_id = notes.get("salon_id")
                 plan = notes.get("plan", "pro")
                 if salon_id:
@@ -3158,7 +3158,7 @@ async def get_whatsapp_status(
 
     base_url = str(request.base_url).rstrip("/")
     webhook_url = f"{base_url}/api/v1/whatsapp/webhook"
-    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "billcare_meta_webhook_2026")
+    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
 
     return {
         "status": salon.whatsapp_status or "not_connected",
@@ -3444,7 +3444,7 @@ async def send_whatsapp_bill(
             recipient_phone=to_phone,
             customer_name=customer_name,
             message_type="bill_receipt",
-            template_name="billcare_service_receipt",
+            template_name="Ruvexi_service_receipt",
             status="skipped_not_configured",
             idempotency_key=idempotency_key,
             error_details="WhatsApp Business sender not configured for this salon."
@@ -3475,7 +3475,7 @@ async def send_whatsapp_bill(
             recipient_phone=to_phone,
             customer_name=customer_name,
             message_type="bill_receipt",
-            template_name="billcare_service_receipt",
+            template_name="Ruvexi_service_receipt",
             meta_message_id=result.get("message_id"),
             status="sent" if result.get("success") else "failed",
             idempotency_key=idempotency_key,
@@ -3490,7 +3490,7 @@ async def send_whatsapp_bill(
             recipient_phone=to_phone,
             customer_name=customer_name,
             message_type="bill_receipt",
-            template_name="billcare_service_receipt",
+            template_name="Ruvexi_service_receipt",
             status="failed",
             idempotency_key=idempotency_key,
             error_details=str(e)
@@ -3560,7 +3560,7 @@ async def send_whatsapp_appointment_reminder(
             recipient_phone=to_phone,
             customer_name=customer_name,
             message_type="appointment_confirmation",
-            template_name="billcare_appointment_confirmation",
+            template_name="Ruvexi_appointment_confirmation",
             meta_message_id=result.get("message_id"),
             status="sent" if result.get("success") else "failed",
             idempotency_key=idempotency_key,
@@ -3609,7 +3609,7 @@ async def send_whatsapp_campaign(
         recipient_phone=to_phone,
         customer_name=customer_name,
         message_type="retention_campaign",
-        template_name="billcare_rebooking_touchup",
+        template_name="Ruvexi_rebooking_touchup",
         meta_message_id=result.get("message_id"),
         status="sent" if result.get("success") else "failed",
         idempotency_key=idempotency_key,
@@ -3636,7 +3636,7 @@ def meta_webhook_verification(request: Request):
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "billcare_meta_webhook_2026")
+    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
 
     if mode == "subscribe" and token == verify_token:
         from fastapi.responses import PlainTextResponse

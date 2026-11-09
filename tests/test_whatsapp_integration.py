@@ -1,4 +1,4 @@
-import os
+﻿import os
 import pytest
 from app.core.models import WhatsAppMessageModel, SalonModel
 
@@ -113,7 +113,7 @@ def test_successful_connection_and_token_secrecy(client, seed_test_data, db_sess
     salon_dict = cfg_data["salon"]
     assert raw_token not in str(salon_dict)
     assert salon_dict["whatsapp"]["maskedToken"].startswith("EAAG")
-    assert "••••••••" in salon_dict["whatsapp"]["maskedToken"]
+    assert "â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" in salon_dict["whatsapp"]["maskedToken"]
 
     # Check status endpoint also returns masked token
     res_status = client.get(
@@ -184,7 +184,7 @@ def test_test_connection_endpoint(client, seed_test_data):
 
 def test_meta_webhook_verification(client):
     """Hub verification challenge handshake."""
-    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "billcare_meta_webhook_2026")
+    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
 
     # Valid challenge
     res = client.get(
@@ -222,7 +222,7 @@ def test_webhook_delivery_tracking_and_idempotency(client, seed_test_data, db_se
         recipient_phone="919845011223",
         customer_name="Priya Sharma",
         message_type="bill_receipt",
-        template_name="billcare_service_receipt",
+        template_name="Ruvexi_service_receipt",
         meta_message_id=meta_id,
         status="sent",
         idempotency_key="bill_INV-1001_919845011223"
