@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, List
 
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
-WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
+WHATSAPP_WEBHOOK_VERIFY_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v20.0")
 
 
@@ -25,7 +25,7 @@ class WhatsAppCloudService:
     def __init__(self):
         self.phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
         self.access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
-        self.verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
+        self.verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
         self.api_version = os.getenv("META_GRAPH_API_VERSION", "v20.0")
         self.default_country_code = os.getenv("DEFAULT_COUNTRY_CODE", "91")
         self.is_configured = bool(self.phone_number_id and self.access_token)
@@ -49,12 +49,18 @@ class WhatsAppCloudService:
 
     def verify_webhook_signature(self, raw_body: bytes, signature_header: Optional[str]) -> bool:
         """
-        Verifies Meta X-Hub-Signature-256 HMAC-SHA256 webhook signature when META_APP_SECRET is set.
+        Verifies Meta X-Hub-Signature-256 HMAC-SHA256 webhook signature.
+        Fails closed when META_APP_SECRET is unset in production.
         """
         app_secret = os.getenv("META_APP_SECRET") or os.getenv("WHATSAPP_APP_SECRET") or ""
         if not app_secret:
-            # Signature secret not configured; enforce strictly only when explicitly required
-            return os.getenv("REQUIRE_WHATSAPP_SIGNATURE", "false").lower() != "true"
+            is_prod = (
+                os.getenv("ENVIRONMENT", "").lower() == "production"
+                or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+            )
+            if is_prod:
+                return False
+            return os.getenv("ALLOW_UNSIGNED_WEBHOOKS", "false").lower() == "true"
 
         if not signature_header or not signature_header.startswith("sha256="):
             return False

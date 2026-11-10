@@ -1,4 +1,4 @@
-﻿import json
+import json
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from .models import (
@@ -18,6 +18,11 @@ from .models import (
 from .security import hash_password
 
 DEFAULT_SALON_ID = "sln_Ruvexi_flagship"
+
+def _seed_password_hash() -> str:
+    import os, secrets
+    pw = os.getenv("SEED_DEFAULT_PASSWORD", "").strip()
+    return hash_password(pw or secrets.token_urlsafe(24))
 
 def seed_database(db: Session):
     # Idempotent database seeding for development and demo environments
@@ -229,7 +234,7 @@ def seed_database(db: Session):
             owner_user.role = "SALON_MANAGER"
             owner_user.phone = "+919845011223"
             if not owner_user.password_hash or not owner_user.password_hash.startswith("$2b$"):
-                owner_user.password_hash = hash_password("Ruvexi2026")
+                owner_user.password_hash = _seed_password_hash()
             db.commit()
 
         # Ensure manager account exists for role testing
@@ -243,7 +248,7 @@ def seed_database(db: Session):
                 phone="+919845033445",
                 role="SALON_MANAGER",
                 avatar="K",
-                password_hash=hash_password("Ruvexi2026"),
+                password_hash=_seed_password_hash(),
             )
             db.add(manager_user)
             db.commit()
@@ -251,7 +256,7 @@ def seed_database(db: Session):
             manager_user.role = "SALON_MANAGER"
             manager_user.phone = "+919845033445"
             if not manager_user.password_hash or not manager_user.password_hash.startswith("$2b$"):
-                manager_user.password_hash = hash_password("Ruvexi2026")
+                manager_user.password_hash = _seed_password_hash()
             db.commit()
 
         # Ensure receptionist account exists for role testing
@@ -265,7 +270,7 @@ def seed_database(db: Session):
                 phone="+919845055667",
                 role="SALON_RECEPTIONIST",
                 avatar="A",
-                password_hash=hash_password("Ruvexi2026"),
+                password_hash=_seed_password_hash(),
             )
             db.add(reception_user)
             db.commit()
@@ -273,7 +278,7 @@ def seed_database(db: Session):
             reception_user.role = "SALON_RECEPTIONIST"
             reception_user.phone = "+919845055667"
             if not reception_user.password_hash or not reception_user.password_hash.startswith("$2b$"):
-                reception_user.password_hash = hash_password("Ruvexi2026")
+                reception_user.password_hash = _seed_password_hash()
             db.commit()
     except Exception as e:
         db.rollback()
@@ -340,7 +345,7 @@ def seed_database(db: Session):
         phone="+919845011223",
         role="SALON_MANAGER",
         avatar="S",
-        password_hash=hash_password("Ruvexi2026"),
+        password_hash=_seed_password_hash(),
     )
     db.add(owner)
 

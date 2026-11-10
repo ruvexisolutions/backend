@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import inspect, text
 from app.core.database import engine, Base, SessionLocal
@@ -80,8 +80,13 @@ def ensure_schema_compatibility():
             dt_type = "TIMESTAMPTZ" if is_postgres else "DATETIME"
             
             salon_columns_to_add = [
-                ("logo", "VARCHAR(512) DEFAULT '/logo.png'"),
-                ("logo_url", "VARCHAR(512) DEFAULT '/logo.png'"),
+                ("logo", "TEXT DEFAULT '/logo.png'"),
+                ("logo_url", "TEXT DEFAULT '/logo.png'"),
+                ("tagline", "VARCHAR(255) DEFAULT ''"),
+                ("banner_preset", "VARCHAR(64) DEFAULT 'blurple-nitro'"),
+                ("banner_url", "TEXT"),
+                ("banner_gradient", "VARCHAR(255)"),
+                ("accent_color", "VARCHAR(32) DEFAULT '#FACC15'"),
                 ("upi_id", "VARCHAR(128)"),
                 ("upi_payee_name", "VARCHAR(128)"),
                 ("upi_enabled", f"{bool_type} DEFAULT {false_val}"),
@@ -139,6 +144,7 @@ def ensure_schema_compatibility():
                 ("refunded_at", dt_type),
                 ("points_redeemed", "INTEGER DEFAULT 0"),
                 ("points_discount", "FLOAT DEFAULT 0.0"),
+                ("tip_amount", "FLOAT DEFAULT 0.0"),
             ]
             with engine.begin() as conn:
                 for col_name, col_def in invoice_columns:
@@ -171,7 +177,7 @@ def ensure_schema_compatibility():
                     else:
                         conn.execute(text("ALTER TABLE customers ADD COLUMN wallet_balance FLOAT DEFAULT 0.0"))
 
-        # Services consumable materials
+        # Services consumable materials & image_url
         if "services" in tables:
             srv_cols = [c["name"] for c in inspector.get_columns("services")]
             cols_to_add = [
@@ -179,6 +185,7 @@ def ensure_schema_compatibility():
                 ("material_item_id", "VARCHAR(64)"),
                 ("material_quantity", "FLOAT DEFAULT 0.0"),
                 ("material_unit", "VARCHAR(32) DEFAULT 'ml'"),
+                ("image_url", "TEXT DEFAULT ''"),
             ]
             with engine.begin() as conn:
                 for col_name, col_type in cols_to_add:
@@ -187,6 +194,36 @@ def ensure_schema_compatibility():
                             conn.execute(text(f"ALTER TABLE services ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
                         else:
                             conn.execute(text(f"ALTER TABLE services ADD COLUMN {col_name} {col_type}"))
+
+        # Feedbacks customer_phone
+        if "feedbacks" in tables:
+            fb_cols = [c["name"] for c in inspector.get_columns("feedbacks")]
+            if "customer_phone" not in fb_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE feedbacks ADD COLUMN IF NOT EXISTS customer_phone VARCHAR(32) DEFAULT ''"))
+                    else:
+                        conn.execute(text("ALTER TABLE feedbacks ADD COLUMN customer_phone VARCHAR(32) DEFAULT ''"))
+
+        # Salons logo/logo_url column type upgrade to TEXT for Postgres
+        if is_postgres and "salons" in tables:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE salons ALTER COLUMN logo TYPE TEXT"))
+                    conn.execute(text("ALTER TABLE salons ALTER COLUMN logo_url TYPE TEXT"))
+            except Exception as e_logo:
+                print(f"[Salons Logo Text Upgrade Notice] {e_logo}")
+
+        # Inventory per-salon SKU uniqueness migration
+        if is_postgres and "inventory" in tables:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE inventory DROP CONSTRAINT IF EXISTS inventory_sku_key"))
+                    conn.execute(text("DROP INDEX IF EXISTS ix_inventory_sku"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_inventory_sku ON inventory (sku)"))
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_inventory_salon_sku_idx ON inventory (salon_id, sku)"))
+            except Exception as e_inv:
+                print(f"[Inventory SKU Migration Notice] {e_inv}")
     except Exception as e:
         print(f"[Schema Migration Notice] {e}")
 
@@ -219,6 +256,7 @@ if not allowed_origins:
     allowed_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://ruvexi.netlify.app",
         "https://ruvexisolutions.com",
         "https://www.ruvexisolutions.com",
         "https://website-production-ruvexi.up.railway.app",
@@ -227,11 +265,22 @@ if not allowed_origins:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"^https://.*\.(ruvexisolutions\.com|ruvexi\.io|netlify\.app|up\.railway\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    return response
 
 # Include v1 endpoints
 app.include_router(api_v1_router)

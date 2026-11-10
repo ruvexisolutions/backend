@@ -1,4 +1,5 @@
 import os
+import secrets
 import base64
 import hashlib
 from datetime import datetime, timedelta
@@ -7,11 +8,20 @@ import bcrypt
 from jose import jwt, JWTError
 from cryptography.fernet import Fernet, InvalidToken
 
-DEFAULT_INSECURE_SECRET = "Ruvexi-enterprise-secret-key-production-ready-2026"
-SECRET_KEY = os.getenv("JWT_SECRET", DEFAULT_INSECURE_SECRET)
+_IS_PRODUCTION = (
+    os.getenv("ENVIRONMENT", "").lower() == "production"
+    or bool(os.getenv("RAILWAY_ENVIRONMENT"))
+)
+SECRET_KEY = os.getenv("JWT_SECRET", "").strip()
 
-if os.getenv("ENVIRONMENT") == "production" and SECRET_KEY == DEFAULT_INSECURE_SECRET:
-    print("[CRITICAL SECURITY WARNING] JWT_SECRET environment variable is not configured! Please set a unique 64-character secret on Railway.")
+if not SECRET_KEY:
+    if _IS_PRODUCTION:
+        raise RuntimeError(
+            "CRITICAL SECURITY ERROR: JWT_SECRET environment variable must be set in production!"
+        )
+    # Ephemeral per-process fallback for local development only (no static secret in source code)
+    SECRET_KEY = secrets.token_urlsafe(48)
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_DAYS = 7
 

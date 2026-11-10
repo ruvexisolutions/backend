@@ -11,6 +11,7 @@ from sqlalchemy import (
     Text,
     DateTime,
     ForeignKey,
+    UniqueConstraint,
 )
 from .database import Base
 
@@ -25,8 +26,13 @@ class SalonModel(Base):
     currency = Column(String(10), default="â‚¹")
     chairs = Column(Integer, default=8)
     category = Column(String(128), default="Luxury Hair Studio & Aesthetic Spa")
-    logo_url = Column(String(512), default="/logo.png")
-    logo = Column(String(512), default="/logo.png")
+    logo_url = Column(Text, default="/logo.png")
+    logo = Column(Text, default="/logo.png")
+    tagline = Column(String(255), default="")
+    banner_preset = Column(String(64), default="blurple-nitro")
+    banner_url = Column(Text, nullable=True)
+    banner_gradient = Column(String(255), nullable=True)
+    accent_color = Column(String(32), default="#FACC15")
     gstin = Column(String(32), default="27AABCB1234F1Z8")
     auto_gst = Column(Boolean, default=True)
     phone = Column(String(32), default="+91 98450 11223")
@@ -104,6 +110,11 @@ class SalonModel(Base):
             "category": self.category,
             "logoUrl": self.logo_url,
             "logo": self.logo or self.logo_url,
+            "tagline": self.tagline or "",
+            "bannerPreset": self.banner_preset or "blurple-nitro",
+            "bannerUrl": self.banner_url or "",
+            "bannerGradient": self.banner_gradient or "",
+            "accentColor": self.accent_color or "#FACC15",
             "gstin": self.gstin,
             "autoGst": self.auto_gst,
             "phone": self.phone,
@@ -333,6 +344,7 @@ class ServiceModel(Base):
     is_online_bookable = Column(Boolean, default=True)
     is_active = Column(Boolean, default=True)
     popular = Column(Boolean, default=False)
+    image_url = Column(Text, default="")
 
     def to_dict(self):
         return {
@@ -352,6 +364,7 @@ class ServiceModel(Base):
             "isOnlineBookable": self.is_online_bookable,
             "isActive": self.is_active,
             "popular": self.popular,
+            "imageUrl": self.image_url or "",
         }
 
 class StaffModel(Base):
@@ -409,12 +422,15 @@ class StaffModel(Base):
 
 class InventoryModel(Base):
     __tablename__ = "inventory"
+    __table_args__ = (
+        UniqueConstraint("salon_id", "sku", name="uq_inventory_salon_sku"),
+    )
 
     id = Column(String(64), primary_key=True, default=lambda: f"inv_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(128), nullable=False)
     category = Column(String(64), default="Hair Care")
-    sku = Column(String(64), unique=True, index=True)
+    sku = Column(String(64), index=True)
     current_stock = Column(Integer, default=10)
     min_threshold = Column(Integer, default=5)
     cost_price = Column(Float, default=0.0)
@@ -529,6 +545,7 @@ class InvoiceModel(Base):
     refunded_at = Column(DateTime, nullable=True)
     points_redeemed = Column(Integer, default=0)
     points_discount = Column(Float, default=0.0)
+    tip_amount = Column(Float, default=0.0)
     notes = Column(Text, default="")
     date = Column(String(64), default="")
     created_at = Column(String(64), default=lambda: datetime.utcnow().isoformat())
@@ -581,6 +598,7 @@ class InvoiceModel(Base):
             "refundedAt": self.refunded_at.isoformat() if self.refunded_at else None,
             "pointsRedeemed": self.points_redeemed or 0,
             "pointsDiscount": self.points_discount or 0.0,
+            "tipAmount": self.tip_amount or 0.0,
             "notes": self.notes,
             "date": self.date,
             "createdAt": self.created_at,
@@ -626,6 +644,7 @@ class FeedbackModel(Base):
     id = Column(String(64), primary_key=True, default=lambda: f"fb_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
     customer_name = Column(String(128), nullable=False)
+    customer_phone = Column(String(32), default="")
     staff_name = Column(String(128), default="")
     service_name = Column(String(128), default="")
     rating = Column(Integer, default=5)
@@ -644,6 +663,7 @@ class FeedbackModel(Base):
             "id": self.id,
             "salonId": self.salon_id,
             "customerName": self.customer_name,
+            "customerPhone": self.customer_phone or "",
             "staffName": self.staff_name,
             "serviceName": self.service_name,
             "rating": self.rating,

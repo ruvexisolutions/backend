@@ -6,6 +6,7 @@ import re
 import io
 import base64
 import urllib.parse
+import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Body, Request, status
@@ -81,6 +82,71 @@ def generate_qr_base64(data: str) -> str:
         return f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=10&data={urllib.parse.quote_plus(data)}"
 
 
+def parse_time_to_minutes(time_str: Optional[str]) -> int:
+    """Parses 12h ('02:30 PM') or 24h ('14:30') strings into minutes since midnight."""
+    raw = str(time_str or "11:00").strip().upper()
+    m = re.match(r"^(\d{1,2}):(\d{2})(?:\s*(AM|PM))?$", raw)
+    if not m:
+        return 11 * 60
+    hour = int(m.group(1))
+    minute = int(m.group(2))
+    meridiem = m.group(3)
+    if meridiem == "PM" and hour < 12:
+        hour += 12
+    elif meridiem == "AM" and hour == 12:
+        hour = 0
+    return max(0, min(23 * 60 + 59, hour * 60 + minute))
+
+
+def minutes_to_24h(total_mins: int) -> str:
+    """Formats minutes since midnight into zero-padded HH:MM (24-hour)."""
+    mins = total_mins % (24 * 60)
+    return f"{mins // 60:02d}:{mins % 60:02d}"
+
+
+def normalize_appt_status(status_val: Optional[str]) -> str:
+    return str(status_val or "confirmed").strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def update_staff_performance_for_invoice(
+    db: Session,
+    salon_id: str,
+    invoice: InvoiceModel,
+    items: List[Dict[str, Any]],
+) -> None:
+    """Credits staff revenue, commission, and completed services count when an invoice is paid."""
+    credits: Dict[str, tuple[float, int]] = {}
+    for itm in items or []:
+        sid = str(itm.get("staffId") or "").strip()
+        sname = str(itm.get("staffName") or "").strip()
+        line_val = float(itm.get("price") or 0.0) * int(itm.get("quantity") or 1)
+        is_service = itm.get("type") != "product"
+        key = sid or sname
+        if key:
+            prev_rev, prev_cnt = credits.get(key, (0.0, 0))
+            credits[key] = (prev_rev + line_val, prev_cnt + (1 if is_service else 0))
+
+    if not credits and (invoice.staff_id or invoice.staff_name):
+        key = invoice.staff_id or invoice.staff_name
+        credits[key] = (float(invoice.grand_total or 0.0), 1)
+
+    if not credits:
+        return
+
+    all_staff = db.query(StaffModel).filter(StaffModel.salon_id == salon_id).all()
+    for st in all_staff:
+        matched = credits.get(st.id) or credits.get(st.name)
+        if matched:
+            rev_add, svc_add = matched
+            rate = float(st.commission_rate or 10.0)
+            comm_add = round((rev_add * rate) / 100.0, 2)
+            st.today_revenue = round(float(st.today_revenue or 0.0) + rev_add, 2)
+            st.today_commission = round(float(st.today_commission or 0.0) + comm_add, 2)
+            st.today_earnings = round(float(st.today_earnings or 0.0) + comm_add, 2)
+            st.today_services_count = int(st.today_services_count or 0) + max(0, svc_add)
+            st.total_services_completed = int(st.total_services_completed or 0) + max(0, svc_add)
+
+
 # ============================================================================
 # Multi-Tenant Auth & Role Security Dependencies
 # ============================================================================
@@ -96,8 +162,6 @@ def get_auth_context(
     token = None
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header[7:].strip()
-    elif "token" in request.query_params:
-        token = request.query_params.get("token")
 
     if token:
         payload = decode_access_token(token)
@@ -126,7 +190,8 @@ def get_current_user_and_salon(
     if salon.subscription_status == "trial" and not salon.is_trial_active():
         allowed_paths = [
             "/api/v1/subscription/status",
-            "/api/v1/subscription/upgrade",
+            "/api/v1/subscription/create-order",
+            "/api/v1/subscription/verify-payment",
             "/api/v1/auth/me",
             "/api/v1/salon",
         ]
@@ -145,10 +210,40 @@ def require_salon_manager(
     """Enforces that the authenticated user possesses the SALON_MANAGER role."""
     user, salon = context
     role = (user.role or "").upper()
-    if role not in ("SALON_MANAGER", "OWNER", "MANAGER", "ADMIN"):
+    if role not in ("SALON_MANAGER", "OWNER", "MANAGER", "ADMIN", "MASTER_ADMIN"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access restricted: This action requires Salon Manager authorization."
+        )
+    return user, salon
+
+
+def is_master_admin_user(user: Optional[UserModel]) -> bool:
+    if not user:
+        return False
+    if (user.role or "").strip().upper() == "MASTER_ADMIN":
+        return True
+    raw_env = os.getenv("MASTER_ADMIN_EMAILS") or os.getenv("MASTER_ADMIN_EMAIL") or ""
+    allowed = {e.strip().lower() for e in raw_env.split(",") if e.strip()}
+    return (user.email or "").strip().lower() in allowed
+
+
+def serialize_user_effective(user: UserModel) -> Dict[str, Any]:
+    d = user.to_dict()
+    if is_master_admin_user(user):
+        d["role"] = "MASTER_ADMIN"
+    return d
+
+
+def require_master_admin(
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon)
+) -> tuple[UserModel, SalonModel]:
+    """Enforces platform-wide MASTER_ADMIN privileges."""
+    user, salon = context
+    if not is_master_admin_user(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Restricted to platform Master Admin accounts."
         )
     return user, salon
 
@@ -196,7 +291,7 @@ def get_bootstrap_data(
 
     return {
         "salon": salon.to_dict(),
-        "user": user.to_dict() if user else None,
+        "user": serialize_user_effective(user) if user else None,
         "customers": customers,
         "services": services,
         "staff": staff,
@@ -213,13 +308,18 @@ def get_bootstrap_data(
 # ============================================================================
 @router.post("/auth/login", tags=["Auth"])
 def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    email = (payload.get("email") or "").strip().lower()
+    identifier = (payload.get("email") or payload.get("identifier") or payload.get("phone") or "").strip().lower()
     password = payload.get("password") or ""
 
-    if not email or not password:
-        raise HTTPException(status_code=400, detail="Email and password are required")
+    if not identifier or not password:
+        raise HTTPException(status_code=400, detail="Email/phone and password are required")
 
-    user = db.query(UserModel).filter(UserModel.email.ilike(email)).first()
+    user = db.query(UserModel).filter(UserModel.email.ilike(identifier)).first()
+    if not user:
+        digits = "".join(filter(str.isdigit, identifier))
+        if len(digits) >= 10:
+            user = db.query(UserModel).filter(UserModel.phone.ilike(f"%{digits[-10:]}%")).first()
+
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -230,7 +330,13 @@ def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     if not salon:
         raise HTTPException(status_code=404, detail="Salon workspace not found")
 
-    normalized_role = "SALON_MANAGER" if user.role in ("owner", "manager", "SALON_MANAGER") else "SALON_RECEPTIONIST"
+    raw_role = (user.role or "").upper()
+    if is_master_admin_user(user):
+        normalized_role = "MASTER_ADMIN"
+    elif raw_role in ("OWNER", "MANAGER", "ADMIN", "SALON_MANAGER"):
+        normalized_role = "SALON_MANAGER"
+    else:
+        normalized_role = "SALON_RECEPTIONIST"
 
     token = create_access_token({
         "sub": user.id,
@@ -243,7 +349,138 @@ def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     return {
         "success": True,
         "token": token,
-        "user": user.to_dict(),
+        "user": serialize_user_effective(user),
+        "salon": salon.to_dict(),
+    }
+
+
+@router.post("/auth/google", tags=["Auth"])
+async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """
+    Verifies Google OAuth access_token or ID token (credential) with Google servers,
+    enforces email_verified and client_id (aud) check, and mints a real Ruvexi JWT.
+    """
+    access_token = str(payload.get("accessToken") or "").strip()
+    credential = str(payload.get("credential") or "").strip()
+    expected_client_id = (
+        os.getenv("GOOGLE_CLIENT_ID")
+        or os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID")
+        or ""
+    ).strip()
+    if not expected_client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Google Sign-In is not configured (GOOGLE_CLIENT_ID missing in backend environment).",
+        )
+
+    google_user: Optional[Dict[str, Any]] = None
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        if access_token:
+            token_info_res = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": access_token},
+            )
+            if token_info_res.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid or expired Google access token.")
+            tinfo = token_info_res.json()
+            aud = tinfo.get("aud") or tinfo.get("azp")
+            if expected_client_id and aud and aud != expected_client_id:
+                raise HTTPException(status_code=401, detail="Google token audience mismatch.")
+            user_res = await client.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if user_res.status_code != 200:
+                raise HTTPException(status_code=401, detail="Unable to retrieve Google profile.")
+            google_user = user_res.json()
+        elif credential:
+            res = await client.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": credential},
+            )
+            if res.status_code != 200:
+                raise HTTPException(status_code=401, detail="Invalid Google ID credential.")
+            google_user = res.json()
+            if expected_client_id and google_user.get("aud") != expected_client_id:
+                raise HTTPException(status_code=401, detail="Google credential audience mismatch.")
+        else:
+            raise HTTPException(status_code=400, detail="Google accessToken or credential is required.")
+
+    if not google_user or not google_user.get("email"):
+        raise HTTPException(status_code=400, detail="Google account email not available.")
+
+    email_verified = google_user.get("email_verified")
+    if str(email_verified).lower() not in ("true", "1"):
+        raise HTTPException(status_code=403, detail="Please verify your email address with Google before signing in.")
+
+    email = google_user["email"].strip().lower()
+    display_name = (google_user.get("name") or email.split("@")[0]).strip()
+    user = db.query(UserModel).filter(UserModel.email.ilike(email)).first()
+    is_new_user = False
+
+    if not user:
+        is_new_user = True
+        salon_name = f"{display_name}'s Atelier"
+        slug = re.sub(r"[^a-z0-9]+", "-", salon_name.lower()).strip("-") or "atelier"
+        now = datetime.utcnow()
+        new_salon = SalonModel(
+            id=f"sln_{uuid.uuid4().hex[:12]}",
+            name=salon_name,
+            slug=f"{slug}-{uuid.uuid4().hex[:4]}",
+            branch="Main Studio",
+            city="Mumbai",
+            currency="₹",
+            chairs=6,
+            category="Hair Studio & Aesthetic Spa",
+            phone="",
+            email=email,
+            address="",
+            trial_started_at=now,
+            trial_ends_at=now + timedelta(days=7),
+            subscription_status="trial",
+            subscription_plan="free_trial",
+        )
+        db.add(new_salon)
+        db.flush()
+
+        user = UserModel(
+            id=f"usr_{uuid.uuid4().hex[:12]}",
+            salon_id=new_salon.id,
+            name=display_name,
+            email=email,
+            phone="",
+            password_hash=hash_password(secrets.token_urlsafe(32)),
+            role="SALON_MANAGER",
+            avatar=display_name[0].upper(),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(new_salon)
+        db.refresh(user)
+        salon = new_salon
+    else:
+        salon = db.query(SalonModel).filter(SalonModel.id == user.salon_id).first()
+        if not salon:
+            raise HTTPException(status_code=404, detail="Salon workspace not found.")
+
+    raw_role = (user.role or "").upper()
+    normalized_role = (
+        "MASTER_ADMIN" if is_master_admin_user(user)
+        else ("SALON_MANAGER" if raw_role in ("OWNER", "MANAGER", "ADMIN", "SALON_MANAGER") else "SALON_RECEPTIONIST")
+    )
+    token = create_access_token({
+        "sub": user.id,
+        "email": user.email,
+        "name": user.name,
+        "role": normalized_role,
+        "salon_id": user.salon_id,
+    })
+
+    return {
+        "success": True,
+        "isNewUser": is_new_user,
+        "token": token,
+        "user": serialize_user_effective(user),
         "salon": salon.to_dict(),
     }
 
@@ -323,12 +560,24 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     }
 
 
+@router.get("/auth/public-config", tags=["Auth"])
+def get_public_auth_config():
+    """Returns non-secret public OAuth client configuration sourced strictly from Railway environment."""
+    return {
+        "googleClientId": (
+            os.getenv("GOOGLE_CLIENT_ID")
+            or os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID")
+            or ""
+        ).strip(),
+    }
+
+
 @router.get("/auth/me", tags=["Auth"])
 def get_current_user_me(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon)
 ):
     user, salon = context
-    return {"user": user.to_dict(), "salon": salon.to_dict()}
+    return {"user": serialize_user_effective(user), "salon": salon.to_dict()}
 
 
 @router.post("/auth/forgot-password", tags=["Auth"])
@@ -723,6 +972,9 @@ def get_subscription_status(
         "trialDaysLeft": salon.trial_days_left(),
         "trialStartedAt": salon.trial_started_at.isoformat() if salon.trial_started_at else None,
         "trialEndsAt": salon.trial_ends_at.isoformat() if salon.trial_ends_at else None,
+        "razorpayConfigured": razorpay_service.is_configured,
+        "conciergeWhatsapp": os.getenv("PLATFORM_WHATSAPP_NUMBER", ""),
+        "conciergeUpiId": os.getenv("PLATFORM_UPI_ID", ""),
         "features": {
             "receptionist_pos": True,
             "appointments": True,
@@ -738,19 +990,24 @@ def get_subscription_status(
 @router.post("/subscription/upgrade", tags=["Subscription"])
 def upgrade_subscription(
     payload: Dict[str, Any] = Body(...),
-    context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
+    context: tuple[UserModel, SalonModel] = Depends(require_master_admin),
     db: Session = Depends(get_db)
 ):
-    """Manager activates paid subscription for their salon."""
-    _, salon = context
-    plan = payload.get("plan") or "pro"
+    """Master-Admin only manual override to activate a salon subscription."""
+    _, default_salon = context
+    target_salon_id = payload.get("salonId") or default_salon.id
+    salon = db.query(SalonModel).filter(SalonModel.id == target_salon_id).first()
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    plan = str(payload.get("plan") or "pro").lower()
     salon.subscription_status = "active"
-    salon.subscription_plan = plan
+    salon.subscription_plan = plan if plan in ("pro", "enterprise") else "pro"
+    salon.trial_ends_at = None
     db.commit()
     db.refresh(salon)
     return {
         "success": True,
-        "message": f"Successfully activated {plan.capitalize()} subscription for {salon.name}!",
+        "message": f"Successfully activated {salon.subscription_plan.capitalize()} subscription for {salon.name}!",
         "salon": salon.to_dict()
     }
 
@@ -762,7 +1019,7 @@ def create_subscription_order(
 ):
     """
     Creates a Razorpay checkout order strictly for Ruvexi Platform SaaS Subscriptions.
-    (Pro: â‚¹3,499/mo, Enterprise: â‚¹8,999/mo).
+    (Pro: ₹3,499/mo, Enterprise: ₹8,999/mo).
     """
     user, salon = context
     plan = str(payload.get("plan", "pro")).lower()
@@ -777,8 +1034,9 @@ def create_subscription_order(
     )
 
     if not order_result.get("success"):
+        status_code = 503 if not order_result.get("is_live", False) else 500
         raise HTTPException(
-            status_code=500,
+            status_code=status_code,
             detail=f"Unable to initialize Razorpay subscription order: {order_result.get('error')}"
         )
 
@@ -867,13 +1125,22 @@ def update_salon(
     if "chairs" in data: salon.chairs = int(data["chairs"])
     if "category" in data: salon.category = data["category"]
     if "gstin" in data: salon.gstin = data["gstin"]
+    if "autoGst" in data: salon.auto_gst = bool(data["autoGst"])
     if "phone" in data: salon.phone = data["phone"]
     if "email" in data: salon.email = data["email"]
     if "address" in data: salon.address = data["address"]
     if "timing" in data: salon.timing = data["timing"]
     if "logoUrl" in data:
-        salon.logo_url = data["logoUrl"]
-        salon.logo = data["logoUrl"]
+        salon.logo_url = data["logoUrl"] or "/logo.png"
+        salon.logo = data["logoUrl"] or "/logo.png"
+    elif "logo" in data:
+        salon.logo = data["logo"] or "/logo.png"
+        salon.logo_url = data["logo"] or "/logo.png"
+    if "tagline" in data: salon.tagline = str(data["tagline"] or "")
+    if "bannerPreset" in data: salon.banner_preset = str(data["bannerPreset"] or "blurple-nitro")
+    if "bannerUrl" in data: salon.banner_url = data["bannerUrl"] or None
+    if "bannerGradient" in data: salon.banner_gradient = data["bannerGradient"] or None
+    if "accentColor" in data: salon.accent_color = str(data["accentColor"] or "#FACC15")
     if "upiId" in data:
         salon.upi_id = data["upiId"]
     if "bankAccountName" in data:
@@ -1189,6 +1456,11 @@ def update_customer(
         elif k == "lastVisitDate": customer.last_visit_date = str(v)
         elif k == "allergies": customer.allergies = str(v)
         elif k == "walletBalance": customer.wallet_balance = float(v)
+        elif k == "patchTestStatus": customer.patch_test_status = str(v)
+        elif k == "patchTestDate": customer.patch_test_date = str(v)
+        elif k == "rebookingCadenceDays": customer.rebooking_cadence_days = int(v or 28)
+        elif k == "birthday": customer.birthday = str(v)
+        elif k == "lastService": customer.last_service = str(v)
 
     db.commit()
     db.refresh(customer)
@@ -1278,6 +1550,7 @@ def create_service(
         is_online_bookable=bool(data.get("isOnlineBookable", True)),
         is_active=bool(data.get("isActive", True)),
         popular=bool(data.get("popular", False)),
+        image_url=str(data.get("imageUrl") or ""),
     )
     db.add(service)
     db.commit()
@@ -1314,6 +1587,7 @@ def update_service(
         elif k == "isOnlineBookable": service.is_online_bookable = bool(v)
         elif k == "isActive": service.is_active = bool(v)
         elif k == "popular": service.popular = bool(v)
+        elif k == "imageUrl": service.image_url = str(v or "")
 
     db.commit()
     db.refresh(service)
@@ -1482,12 +1756,22 @@ def create_inventory(
     db: Session = Depends(get_db)
 ):
     _, salon = context
+    sku_val = str(data.get("sku") or f"SKU-{uuid.uuid4().hex[:6].upper()}").strip()
+    existing_sku = db.query(InventoryModel).filter(
+        InventoryModel.salon_id == salon.id,
+        InventoryModel.sku == sku_val,
+    ).first()
+    if existing_sku:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"SKU '{sku_val}' already exists in your inventory ({existing_sku.name})."
+        )
     item = InventoryModel(
         id=f"inv_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
         name=data.get("name", "Product"),
         category=data.get("category", "Hair Care"),
-        sku=data.get("sku") or f"SKU-{uuid.uuid4().hex[:6].upper()}",
+        sku=sku_val,
         current_stock=int(data.get("currentStock") or 10),
         min_threshold=int(data.get("minThreshold") or 5),
         cost_price=float(data.get("costPrice") or 0.0),
@@ -1543,8 +1827,9 @@ def adjust_stock(
     context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
     db: Session = Depends(get_db)
 ):
-    _, salon = context
+    user, salon = context
     change = int(payload.get("change") or 0)
+    reason = str(payload.get("reason") or ("manual_restock" if change > 0 else "manual_consumption")).strip()
     item = db.query(InventoryModel).filter(
         InventoryModel.id == item_id,
         InventoryModel.salon_id == salon.id
@@ -1552,10 +1837,22 @@ def adjust_stock(
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    item.current_stock = max(0, item.current_stock + change)
+    prev_stock = int(item.current_stock or 0)
+    item.current_stock = max(0, prev_stock + change)
     if change > 0:
         item.last_restocked = datetime.utcnow().strftime("%Y-%m-%d")
 
+    ledger = InventoryLedgerModel(
+        salon_id=salon.id,
+        item_id=item.id,
+        item_name=item.name,
+        change_qty=item.current_stock - prev_stock,
+        previous_stock=prev_stock,
+        new_stock=item.current_stock,
+        reason=reason,
+        performed_by=user.name if user else "Salon Manager",
+    )
+    db.add(ledger)
     db.commit()
     db.refresh(item)
     return item.to_dict()
@@ -1604,19 +1901,17 @@ def create_appointment(
 ):
     _, salon = context
     date_val = data.get("date") or datetime.utcnow().strftime("%Y-%m-%d")
-    start_time_val = data.get("startTime") or data.get("time") or "11:00"
+    raw_start = data.get("startTime") or data.get("time") or "11:00"
     duration_val = int(data.get("duration") or data.get("durationMinutes") or 45)
+    start_mins = parse_time_to_minutes(raw_start)
+    start_time_val = minutes_to_24h(start_mins)
 
     if data.get("endTime"):
-        end_time_val = data["endTime"]
+        end_mins = parse_time_to_minutes(data["endTime"])
+        end_time_val = minutes_to_24h(end_mins)
     else:
-        try:
-            parts = start_time_val.split(":")
-            sh, sm = int(parts[0]), int(parts[1])
-            tot = sh * 60 + sm + duration_val
-            end_time_val = f"{(tot // 60) % 24:02d}:{tot % 60:02d}"
-        except Exception:
-            end_time_val = "11:45"
+        end_mins = start_mins + duration_val
+        end_time_val = minutes_to_24h(end_mins)
 
     staff_id_val = data.get("staffId", "")
     staff_name_val = data.get("staffName", "Priya Sharma")
@@ -1624,20 +1919,24 @@ def create_appointment(
 
     allow_double_booking = data.get("allowDoubleBooking", False)
 
-    # Double-booking collision detection
-    if not allow_double_booking and staff_name_val:
-        existing_conflicts = db.query(AppointmentModel).filter(
+    # Double-booking collision detection across all active statuses & normalized 24h minutes
+    if not allow_double_booking and (staff_id_val or staff_name_val):
+        day_appts = db.query(AppointmentModel).filter(
             AppointmentModel.salon_id == salon.id,
             AppointmentModel.date == date_val,
-            AppointmentModel.status.in_(["confirmed", "in_service", "scheduled"]),
-            (
-                (AppointmentModel.staff_id == staff_id_val) |
-                (AppointmentModel.staff_name == staff_name_val)
-            )
         ).all()
 
-        for c_apt in existing_conflicts:
-            if (start_time_val < c_apt.end_time) and (end_time_val > c_apt.start_time):
+        for c_apt in day_appts:
+            if normalize_appt_status(c_apt.status) not in ("confirmed", "in_service", "scheduled"):
+                continue
+            same_staff = (staff_id_val and c_apt.staff_id == staff_id_val) or (
+                staff_name_val and c_apt.staff_name == staff_name_val
+            )
+            if not same_staff:
+                continue
+            c_start = parse_time_to_minutes(c_apt.start_time or c_apt.time)
+            c_end = parse_time_to_minutes(c_apt.end_time) if c_apt.end_time else (c_start + int(c_apt.duration_minutes or 45))
+            if (start_mins < c_end) and (end_mins > c_start):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=f"Double-booking conflict: Stylist {staff_name_val} is already booked from {c_apt.start_time} to {c_apt.end_time} on {date_val} ({c_apt.service_name} for {c_apt.customer_name})."
@@ -1829,18 +2128,41 @@ def create_invoice(
         ).first()
 
     if points_redeemed > 0 and cust:
-        # Validate customer has enough points: 1 point = â‚¹1
+        # Validate customer has enough points: 1 point = ₹1
         actual_redeem = min(points_redeemed, cust.loyalty_points)
         points_discount = min(float(actual_redeem), taxable_amount)
         points_redeemed = int(points_discount)
         taxable_amount = max(0.0, taxable_amount - points_discount)
         cust.loyalty_points = max(0, cust.loyalty_points - points_redeemed)
 
-    tax_percent = float(data.get("taxPercent") if "taxPercent" in data else 5.0)
-    tax_amount = round((taxable_amount * tax_percent) / 100.0, 2)
-    cgst = round(tax_amount / 2.0, 2)
-    sgst = round(tax_amount - cgst, 2)
-    grand_total = round(taxable_amount + tax_amount, 2)
+    default_tax_pct = 5.0 if salon.auto_gst else 0.0
+    tax_percent = float(data.get("taxPercent") if data.get("taxPercent") is not None else default_tax_pct)
+    tip_amount = max(0.0, float(data.get("tipAmount") or 0.0))
+
+    if bool(data.get("gstIncluded")):
+        # Line prices are tax-inclusive; extract GST component without adding extra tax
+        if tax_percent > 0:
+            base_excl = round(taxable_amount / (1.0 + tax_percent / 100.0), 2)
+            tax_amount = round(taxable_amount - base_excl, 2)
+        else:
+            tax_amount = 0.0
+        cgst = round(tax_amount / 2.0, 2)
+        sgst = round(tax_amount - cgst, 2)
+        grand_total = round(taxable_amount + tip_amount, 2)
+    else:
+        tax_amount = round((taxable_amount * tax_percent) / 100.0, 2)
+        cgst = round(tax_amount / 2.0, 2)
+        sgst = round(tax_amount - cgst, 2)
+        grand_total = round(taxable_amount + tax_amount + tip_amount, 2)
+
+    # Infer top-level staff_id/staff_name from items if omitted
+    top_staff_id = str(data.get("staffId") or "").strip()
+    top_staff_name = str(data.get("staffName") or "").strip()
+    if not top_staff_id and items:
+        first_with_staff = next((itm for itm in items if itm.get("staffId") or itm.get("staffName")), None)
+        if first_with_staff:
+            top_staff_id = str(first_with_staff.get("staffId") or "")
+            top_staff_name = top_staff_name or str(first_with_staff.get("staffName") or "")
 
     invoice = InvoiceModel(
         id=f"inv_{uuid.uuid4().hex[:12]}",
@@ -1849,14 +2171,15 @@ def create_invoice(
         customer_id=data.get("customerId", "cst_walkin"),
         customer_name=data.get("customerName", "Walk-in Guest"),
         customer_phone=data.get("customerPhone", ""),
-        staff_id=data.get("staffId", ""),
-        staff_name=data.get("staffName", ""),
+        staff_id=top_staff_id,
+        staff_name=top_staff_name,
         items_json=json.dumps(items),
         subtotal=computed_subtotal,
         discount_percent=discount_percent,
         discount_amount=discount_amount,
         points_redeemed=points_redeemed,
         points_discount=points_discount,
+        tip_amount=tip_amount,
         tax_percent=tax_percent,
         cgst=cgst,
         sgst=sgst,
@@ -1873,13 +2196,47 @@ def create_invoice(
     user, _ = context
     requested_status = str(data.get("status") or data.get("paymentStatus") or "paid").lower()
     raw_method = str(data.get("paymentMethod") or "CASH").upper()
-    payment_method = "CASH" if "CASH" in raw_method else ("UPI" if "UPI" in raw_method else raw_method)
+    if "SPLIT" in raw_method:
+        payment_method = "SPLIT"
+    elif "CASH" in raw_method:
+        payment_method = "CASH"
+    elif "UPI" in raw_method:
+        payment_method = "UPI"
+    else:
+        payment_method = raw_method
+
+    split_breakdown = data.get("paymentBreakdown") or data.get("splitDetails") or {}
 
     if requested_status == "paid":
         amount_received = grand_total
         change_given = 0.0
 
-        if payment_method == "CASH":
+        if payment_method == "SPLIT":
+            cash_part = max(0.0, float(split_breakdown.get("cash") or 0.0))
+            upi_part = max(0.0, float(split_breakdown.get("upi") or 0.0))
+            card_part = max(0.0, float(split_breakdown.get("card") or 0.0))
+            wallet_part = max(0.0, float(split_breakdown.get("wallet") or 0.0))
+            split_sum = round(cash_part + upi_part + card_part + wallet_part, 2)
+            if split_sum <= 0:
+                cash_part = round(grand_total / 2.0, 2)
+                upi_part = round(grand_total - cash_part, 2)
+                split_sum = grand_total
+            if split_sum + 0.5 < grand_total:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Split payment breakdown (₹{split_sum:,.2f}) is less than grand total (₹{grand_total:,.2f})."
+                )
+            if upi_part > 0 and (not salon.upi_enabled or not salon.upi_id):
+                raise HTTPException(status_code=400, detail="UPI is disabled or unconfigured for the UPI portion of this split bill.")
+            if wallet_part > 0:
+                if not cust or float(cust.wallet_balance or 0.0) < wallet_part:
+                    raise HTTPException(status_code=400, detail="Insufficient customer wallet balance for split portion.")
+                cust.wallet_balance = round(float(cust.wallet_balance or 0.0) - wallet_part, 2)
+            amount_received = split_sum
+            change_given = max(0.0, round(split_sum - grand_total, 2))
+            txn_ref = str(data.get("transactionReference") or f"BC-TXN-SPLIT-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}").strip()
+            verification_method = "split_counter_verification"
+        elif payment_method == "CASH":
             if not salon.cash_enabled:
                 raise HTTPException(status_code=400, detail="Cash payment is currently disabled for this salon.")
             amount_received = float(data.get("amountReceived") if data.get("amountReceived") is not None else (data.get("amountTendered") if data.get("amountTendered") is not None else grand_total))
@@ -2027,6 +2384,9 @@ def create_invoice(
                         )
                         db.add(ledger)
 
+        # Credit staff productivity & commission
+        update_staff_performance_for_invoice(db, salon_id, invoice, items)
+
         # Update active cash register shift if open
         active_shift = db.query(CashRegisterShiftModel).filter(
             CashRegisterShiftModel.salon_id == salon_id,
@@ -2039,6 +2399,14 @@ def create_invoice(
                 active_shift.expected_cash += grand_total
             elif payment_method == "UPI":
                 active_shift.upi_sales += grand_total
+            elif payment_method == "SPLIT":
+                cash_part = max(0.0, float(split_breakdown.get("cash") or 0.0))
+                upi_part = max(0.0, float(split_breakdown.get("upi") or 0.0))
+                card_part = max(0.0, float(split_breakdown.get("card") or 0.0))
+                active_shift.cash_sales += cash_part
+                active_shift.expected_cash += cash_part
+                active_shift.upi_sales += upi_part
+                active_shift.card_sales += card_part
             else:
                 active_shift.card_sales += grand_total
     else:
@@ -2523,6 +2891,9 @@ def confirm_invoice_payment(
                 )
                 db.add(ledger)
 
+    # Credit staff productivity & commission on invoice settlement
+    update_staff_performance_for_invoice(db, salon.id, invoice, items)
+
     # Update active cash register shift
     active_shift = db.query(CashRegisterShiftModel).filter(
         CashRegisterShiftModel.salon_id == salon.id,
@@ -2649,17 +3020,19 @@ def create_followup(
     db: Session = Depends(get_db)
 ):
     _, salon = context
+    raw_status = str(data.get("status") or "pending").strip().lower()
+    norm_status = "sent" if raw_status in ("sent", "delivered") else "pending"
     flw = FollowUpModel(
         id=f"flw_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
         customer_id=data.get("customerId", ""),
         customer_name=data.get("customerName", "Valued Client"),
         customer_phone=data.get("customerPhone", ""),
-        service_name=data.get("serviceName", "Service"),
-        trigger_reason=data.get("triggerReason", "Rebooking Check-In"),
+        service_name=data.get("serviceName") or data.get("serviceTrigger") or "Service",
+        trigger_reason=data.get("triggerReason") or data.get("serviceTrigger") or "Rebooking Check-In",
         suggested_message=data.get("suggestedMessage", ""),
-        status=data.get("status", "pending"),
-        due_date=data.get("dueDate", ""),
+        status=norm_status,
+        due_date=data.get("dueDate") or data.get("scheduledFor") or "",
         campaign_type=data.get("campaignType", "Rebooking Reminder"),
         discount_offer=data.get("discountOffer", ""),
     )
@@ -2714,15 +3087,17 @@ def create_feedback(
 ):
     _, salon = context
     tags = data.get("tags") or data.get("improvementTags") or ["Service Experience"]
+    rating_val = int(data.get("rating") or data.get("serviceRating") or 5)
     fb = FeedbackModel(
         id=f"fb_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
         customer_name=data.get("customerName", "Guest"),
+        customer_phone=str(data.get("customerPhone") or ""),
         staff_name=data.get("staffName", ""),
         service_name=data.get("serviceName", ""),
-        rating=int(data.get("rating") or 5),
+        rating=max(1, min(5, rating_val)),
         comment=data.get("comment", ""),
-        date=data.get("date") or "Today",
+        date=data.get("date") or datetime.utcnow().strftime("%Y-%m-%d"),
         tags_json=json.dumps(tags),
     )
     db.add(fb)
@@ -2743,77 +3118,159 @@ def get_reports_summary(
     db: Session = Depends(get_db)
 ):
     """
-    Computes server-side revenue, tax, discount, commission, expense, and profitability
-    analytics for the salon manager.
+    Computes server-side revenue, tax, discount, commission, expense, service popularity,
+    feedback ratings, and profitability analytics filtered by date range.
     """
     _, salon = context
-    invoices = db.query(InvoiceModel).filter(InvoiceModel.salon_id == salon.id).all()
-    expenses = db.query(ExpenseModel).filter(ExpenseModel.salon_id == salon.id).all()
+    all_invoices = db.query(InvoiceModel).filter(InvoiceModel.salon_id == salon.id).all()
+    all_expenses = db.query(ExpenseModel).filter(ExpenseModel.salon_id == salon.id).all()
     staff_members = db.query(StaffModel).filter(StaffModel.salon_id == salon.id).all()
+    appointments = db.query(AppointmentModel).filter(AppointmentModel.salon_id == salon.id).all()
+    customers = db.query(CustomerModel).filter(CustomerModel.salon_id == salon.id).all()
+    feedbacks = db.query(FeedbackModel).filter(FeedbackModel.salon_id == salon.id).all()
 
-    paid_invoices = [i for i in invoices if i.status == "paid"]
-    refunded_invoices = [i for i in invoices if i.status == "refunded"]
+    now = datetime.utcnow()
+    range_key = str(range or "month").lower()
+    if range_key == "today":
+        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif range_key == "week":
+        cutoff = now - timedelta(days=7)
+    elif range_key == "month":
+        cutoff = now - timedelta(days=30)
+    else:
+        cutoff = None
 
-    gross_revenue = sum(i.grand_total for i in paid_invoices)
-    subtotal_revenue = sum(i.subtotal for i in paid_invoices)
-    total_discounts = sum(i.discount_amount for i in paid_invoices)
-    total_tax = sum(i.tax_amount for i in paid_invoices)
-    cgst_total = sum(i.cgst for i in paid_invoices)
-    sgst_total = sum(i.sgst for i in paid_invoices)
-    refunds_total = sum(i.refund_amount or i.grand_total for i in refunded_invoices)
+    def parse_iso_dt(raw: Any) -> Optional[datetime]:
+        if isinstance(raw, datetime):
+            return raw
+        if not raw:
+            return None
+        s = str(raw).strip().replace("Z", "")
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(s[:26], fmt)
+            except Exception:
+                continue
+        return None
+
+    def in_window(dt_val: Any) -> bool:
+        if not cutoff:
+            return True
+        parsed = parse_iso_dt(dt_val)
+        if not parsed:
+            return True
+        return parsed >= cutoff
+
+    invoices = [i for i in all_invoices if in_window(i.paid_at or i.created_at)]
+    expenses = [e for e in all_expenses if in_window(e.date)]
+    appts_in_range = [a for a in appointments if in_window(a.date or a.created_at)]
+
+    paid_invoices = [i for i in invoices if (i.status or "").lower() == "paid"]
+    refunded_invoices = [i for i in invoices if (i.status or "").lower() == "refunded"]
+    pending_invoices = [i for i in invoices if (i.status or "").lower() in ("pending", "partially_paid", "draft")]
+
+    gross_revenue = sum(float(i.grand_total or 0.0) for i in paid_invoices)
+    subtotal_revenue = sum(float(i.subtotal or 0.0) for i in paid_invoices)
+    total_discounts = sum(float(i.discount_amount or 0.0) for i in paid_invoices)
+    total_tax = sum(float(i.tax_amount or 0.0) for i in paid_invoices)
+    cgst_total = sum(float(i.cgst or 0.0) for i in paid_invoices)
+    sgst_total = sum(float(i.sgst or 0.0) for i in paid_invoices)
+    refunds_total = sum(float(i.refund_amount or i.grand_total or 0.0) for i in refunded_invoices)
+    pending_total = sum(float(i.grand_total or 0.0) for i in pending_invoices)
     net_revenue = max(0.0, gross_revenue - refunds_total)
 
-    # Payment method breakdown
-    payment_breakdown = {"UPI": 0.0, "Cash": 0.0, "Card": 0.0, "Split": 0.0}
+    # Payment method breakdown (includes Split allocation when breakdown is present)
+    payment_breakdown = {"UPI": 0.0, "Cash": 0.0, "Card": 0.0, "Split": 0.0, "Wallet": 0.0}
     for inv in paid_invoices:
-        pm = inv.payment_method or "UPI"
-        if "upi" in pm.lower(): payment_breakdown["UPI"] += inv.grand_total
-        elif "cash" in pm.lower(): payment_breakdown["Cash"] += inv.grand_total
-        elif "card" in pm.lower(): payment_breakdown["Card"] += inv.grand_total
-        elif "split" in pm.lower(): payment_breakdown["Split"] += inv.grand_total
-        else: payment_breakdown["UPI"] += inv.grand_total
+        pm = (inv.payment_method or "UPI").lower()
+        amt = float(inv.grand_total or 0.0)
+        if "split" in pm:
+            payment_breakdown["Split"] += amt
+        elif "upi" in pm:
+            payment_breakdown["UPI"] += amt
+        elif "cash" in pm:
+            payment_breakdown["Cash"] += amt
+        elif "card" in pm:
+            payment_breakdown["Card"] += amt
+        elif "wallet" in pm:
+            payment_breakdown["Wallet"] += amt
+        else:
+            payment_breakdown["UPI"] += amt
 
-    # Category breakdown (Service vs Product retail)
+    # Category + service popularity breakdown
     service_revenue = 0.0
     product_revenue = 0.0
+    service_stats: Dict[str, Dict[str, Any]] = {}
+    staff_rev_map: Dict[str, float] = {}
+    staff_cnt_map: Dict[str, int] = {}
+
     for inv in paid_invoices:
         try:
             itms = json.loads(inv.items_json) if inv.items_json else []
-            for itm in itms:
-                price = float(itm.get("price") or 0.0)
-                qty = int(itm.get("quantity") or 1)
-                if itm.get("type") == "product":
-                    product_revenue += (price * qty)
-                else:
-                    service_revenue += (price * qty)
         except Exception:
-            service_revenue += inv.grand_total
+            itms = []
+
+        if not itms:
+            service_revenue += float(inv.grand_total or 0.0)
+            skey = inv.staff_id or inv.staff_name
+            if skey:
+                staff_rev_map[skey] = staff_rev_map.get(skey, 0.0) + float(inv.grand_total or 0.0)
+                staff_cnt_map[skey] = staff_cnt_map.get(skey, 0) + 1
+            continue
+
+        for itm in itms:
+            price = float(itm.get("price") or 0.0)
+            qty = int(itm.get("quantity") or 1)
+            line_rev = price * qty
+            sname = str(itm.get("name") or "Salon Service").strip()
+            skey = str(itm.get("staffId") or itm.get("staffName") or inv.staff_id or inv.staff_name or "").strip()
+
+            if itm.get("type") == "product":
+                product_revenue += line_rev
+            else:
+                service_revenue += line_rev
+                entry = service_stats.get(sname) or {"name": sname, "bookings": 0, "revenue": 0.0}
+                entry["bookings"] += qty
+                entry["revenue"] = round(entry["revenue"] + line_rev, 2)
+                service_stats[sname] = entry
+
+            if skey:
+                staff_rev_map[skey] = staff_rev_map.get(skey, 0.0) + line_rev
+                if itm.get("type") != "product":
+                    staff_cnt_map[skey] = staff_cnt_map.get(skey, 0) + qty
+
+    sorted_services = sorted(service_stats.values(), key=lambda x: x["revenue"], reverse=True)
 
     # Staff performance & commissions
     staff_perf = []
     for st in staff_members:
-        st_invoices = [i for i in paid_invoices if i.staff_id == st.id or i.staff_name == st.name]
-        st_rev = sum(i.grand_total for i in st_invoices)
+        st_rev = round(staff_rev_map.get(st.id, 0.0) or staff_rev_map.get(st.name, 0.0), 2)
+        st_cnt = staff_cnt_map.get(st.id, 0) or staff_cnt_map.get(st.name, 0)
         comm_rate = float(st.commission_rate or 10.0)
         comm_amount = round((st_rev * comm_rate) / 100.0, 2)
         staff_perf.append({
             "staffId": st.id,
             "staffName": st.name,
             "role": st.role,
-            "servicesCount": len(st_invoices),
+            "servicesCount": st_cnt,
             "revenue": st_rev,
             "commissionRate": comm_rate,
             "commissionEarned": comm_amount,
         })
     staff_perf.sort(key=lambda x: x["revenue"], reverse=True)
 
+    # Real repeat customer rate & feedback averages
+    repeat_customers = sum(1 for c in customers if int(c.total_visits or c.visits_count or 0) > 1)
+    repeat_pct = round((repeat_customers / len(customers)) * 100) if customers else 0
+    avg_rating = round(sum(float(f.rating or 5) for f in feedbacks) / len(feedbacks), 2) if feedbacks else 0.0
+
     # Expenses & Net Profitability
-    total_expenses = sum(e.amount for e in expenses)
+    total_expenses = sum(float(e.amount or 0.0) for e in expenses)
     net_profit = round(net_revenue - total_expenses, 2)
     avg_ticket = round(gross_revenue / max(1, len(paid_invoices)), 2)
 
     return {
-        "range": range,
+        "range": range_key,
         "metrics": {
             "grossRevenue": round(gross_revenue, 2),
             "subtotal": round(subtotal_revenue, 2),
@@ -2823,16 +3280,28 @@ def get_reports_summary(
             "sgst": round(sgst_total, 2),
             "refundsCount": len(refunded_invoices),
             "refundsTotal": round(refunds_total, 2),
+            "pendingTotal": round(pending_total, 2),
+            "pendingCount": len(pending_invoices),
             "netRevenue": round(net_revenue, 2),
             "totalExpenses": round(total_expenses, 2),
             "netProfit": net_profit,
             "invoicesCount": len(paid_invoices),
+            "appointmentsCount": len(appts_in_range),
             "averageTicketSize": avg_ticket,
+            "repeatClientPercentage": repeat_pct,
         },
         "paymentBreakdown": payment_breakdown,
         "categoryBreakdown": {
             "serviceRevenue": round(service_revenue, 2),
             "productRevenue": round(product_revenue, 2),
+        },
+        "serviceBreakdown": {
+            "topServices": sorted_services[:5],
+            "slowServices": list(reversed(sorted_services[-5:])) if len(sorted_services) > 3 else [],
+        },
+        "feedbackSummary": {
+            "count": len(feedbacks),
+            "averageRating": avg_rating,
         },
         "staffPerformance": staff_perf,
         "recentExpenses": [e.to_dict() for e in expenses[:10]],
@@ -3248,7 +3717,7 @@ async def get_whatsapp_status(
 
     base_url = str(request.base_url).rstrip("/")
     webhook_url = f"{base_url}/api/v1/whatsapp/webhook"
-    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
+    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
 
     return {
         "status": salon.whatsapp_status or "not_connected",
@@ -3622,12 +4091,12 @@ async def send_whatsapp_appointment_reminder(
 ):
     """Sends appointment booking confirmation / reminder via WhatsApp from the salon's verified number."""
     _, salon = context
-    to_phone = data.get("customerPhone", "")
-    customer_name = data.get("customerName", "Valued Client")
-    service_name = data.get("serviceName", "Salon Service")
-    staff_name = data.get("staffName", "Master Stylist")
-    date_time = data.get("dateTime", "Tomorrow")
-    appointment_id = data.get("appointmentId", "")
+    to_phone = str(data.get("customerPhone") or data.get("to_phone") or data.get("phone") or "")
+    customer_name = str(data.get("customerName") or data.get("customer_name") or "Valued Client")
+    service_name = str(data.get("serviceName") or data.get("service_name") or "Salon Service")
+    staff_name = str(data.get("staffName") or data.get("staff_name") or "Master Stylist")
+    date_time = str(data.get("dateTime") or data.get("date_time") or "Tomorrow")
+    appointment_id = str(data.get("appointmentId") or data.get("appointment_id") or "")
 
     idempotency_key = f"appt_{appointment_id}_{to_phone}" if appointment_id else None
 
@@ -3692,10 +4161,11 @@ async def send_whatsapp_campaign(
 ):
     """Sends CRM retention messages via WhatsApp Cloud API from the salon's verified number."""
     _, salon = context
-    to_phone = data.get("customerPhone", "")
-    customer_name = data.get("customerName", "Valued Client")
-    message_text = data.get("message", "")
-    followup_id = data.get("followupId")
+    to_phone = str(data.get("customerPhone") or data.get("targetPhone") or data.get("to_phone") or "")
+    customer_name = str(data.get("customerName") or data.get("customer_name") or "Valued Client")
+    raw_msg = str(data.get("message") or "")
+    message_text = urllib.parse.unquote(raw_msg) if "%" in raw_msg else raw_msg
+    followup_id = data.get("followupId") or data.get("followup_id")
 
     idempotency_key = f"campaign_{followup_id}_{to_phone}" if followup_id else None
 
@@ -3749,13 +4219,67 @@ def meta_webhook_verification(request: Request):
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
 
-    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "Ruvexi_meta_webhook_2026")
+    verify_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "")
+    if not verify_token:
+        raise HTTPException(status_code=503, detail="WhatsApp webhook verify token not configured on server.")
 
-    if mode == "subscribe" and token == verify_token:
+    import hmac as _hmac
+    if mode == "subscribe" and token and _hmac.compare_digest(str(token), verify_token):
         from fastapi.responses import PlainTextResponse
         return PlainTextResponse(content=challenge, status_code=200)
 
     raise HTTPException(status_code=403, detail="Verification token mismatch")
+
+
+@router.post("/ai/generate", tags=["AI"])
+async def generate_ai_content(
+    payload: Dict[str, Any] = Body(...),
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+):
+    """
+    Authenticated server-side Gemini proxy reading GEMINI_API_KEY strictly from Railway environment.
+    Zero private AI keys exist in frontend code or client bundles.
+    """
+    prompt = str(payload.get("prompt") or "").strip()
+    system_instruction = str(payload.get("systemInstruction") or "").strip()
+    if not prompt or len(prompt) > 8000:
+        raise HTTPException(status_code=400, detail="Valid prompt under 8,000 characters is required.")
+
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="GEMINI_API_KEY is not configured in Railway backend environment.",
+        )
+
+    body: Dict[str, Any] = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000},
+    }
+    if system_instruction:
+        body["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        last_status = 500
+        last_err = "AI generation failed"
+        for model in ("gemini-2.0-flash", "gemini-1.5-flash"):
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            resp = await client.post(url, params={"key": api_key}, json=body)
+            if resp.status_code == 200:
+                data = resp.json()
+                text_out = (
+                    data.get("candidates", [{}])[0]
+                    .get("content", {})
+                    .get("parts", [{}])[0]
+                    .get("text", "")
+                )
+                return {"success": True, "text": str(text_out).strip()}
+            last_status = resp.status_code
+            last_err = resp.text
+            if resp.status_code != 404:
+                break
+
+    raise HTTPException(status_code=last_status, detail=last_err)
 
 
 @router.post("/whatsapp/webhook", tags=["WhatsApp"])
@@ -3824,4 +4348,353 @@ async def meta_webhook_event_handler(
         return {"status": "ok", "processed": True}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# Public Salon Discovery, Online Booking & Public Feedback (Unauthenticated)
+# ============================================================================
+def _serialize_public_salon(salon: SalonModel) -> Dict[str, Any]:
+    return {
+        "id": salon.id,
+        "name": salon.name,
+        "slug": salon.slug,
+        "branch": salon.branch,
+        "city": salon.city,
+        "address": salon.address,
+        "phone": salon.phone,
+        "email": salon.email,
+        "timing": salon.timing,
+        "currency": salon.currency or "₹",
+        "chairs": salon.chairs or 6,
+        "category": salon.category,
+        "logoUrl": salon.logo_url or salon.logo or "/logo.png",
+        "logo": salon.logo or salon.logo_url or "/logo.png",
+        "tagline": salon.tagline or "",
+        "bannerPreset": salon.banner_preset or "blurple-nitro",
+        "bannerUrl": salon.banner_url or "",
+        "bannerGradient": salon.banner_gradient or "",
+        "accentColor": salon.accent_color or "#FACC15",
+        "rating": salon.rating or 4.9,
+        "reviewCount": salon.review_count or 0,
+    }
+
+
+@router.get("/public/salons", tags=["PublicBooking"])
+def list_public_salons(db: Session = Depends(get_db)):
+    """Returns active salons for the /book public directory without leaking internal billing or PII."""
+    salons = db.query(SalonModel).filter(
+        SalonModel.subscription_status.in_(["trial", "active"])
+    ).all()
+    return {"salons": [_serialize_public_salon(s) for s in salons]}
+
+
+@router.get("/public/salons/{salon_slug}", tags=["PublicBooking"])
+def get_public_salon_profile(
+    salon_slug: str,
+    date: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Loads public salon metadata, online-bookable services, stylists, and booked slots."""
+    slug_clean = (salon_slug or "").strip().lower()
+    salon = db.query(SalonModel).filter(
+        (SalonModel.slug.ilike(slug_clean)) | (SalonModel.id == salon_slug)
+    ).first()
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon booking page not found.")
+
+    services = [
+        s.to_dict()
+        for s in db.query(ServiceModel)
+        .filter(ServiceModel.salon_id == salon.id, ServiceModel.is_active == True)
+        .all()
+        if s.is_online_bookable
+    ]
+
+    staff_list = [
+        {
+            "id": st.id,
+            "name": st.name,
+            "role": st.role,
+            "specialty": (json.loads(st.specialties_json)[0] if st.specialties_json else "Stylist"),
+            "avatar": st.avatar,
+            "rating": st.rating or 4.9,
+            "isActive": st.is_active,
+        }
+        for st in db.query(StaffModel)
+        .filter(StaffModel.salon_id == salon.id, StaffModel.is_active == True)
+        .all()
+    ]
+
+    booked_slots = []
+    if date:
+        appts = db.query(AppointmentModel).filter(
+            AppointmentModel.salon_id == salon.id,
+            AppointmentModel.date == date,
+        ).all()
+        for apt in appts:
+            if normalize_appt_status(apt.status) in ("confirmed", "in_service", "scheduled"):
+                booked_slots.append({
+                    "staffId": apt.staff_id,
+                    "staffName": apt.staff_name,
+                    "startTime": apt.start_time,
+                    "endTime": apt.end_time,
+                })
+
+    return {
+        "salon": _serialize_public_salon(salon),
+        "services": services,
+        "staff": staff_list,
+        "bookedSlots": booked_slots,
+    }
+
+
+@router.post("/public/salons/{salon_slug}/book", tags=["PublicBooking"])
+def create_public_booking(
+    salon_slug: str,
+    data: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Creates a verified appointment from the public salon booking portal without staff login."""
+    slug_clean = (salon_slug or "").strip().lower()
+    salon = db.query(SalonModel).filter(
+        (SalonModel.slug.ilike(slug_clean)) | (SalonModel.id == salon_slug)
+    ).first()
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found.")
+
+    if salon.subscription_status == "suspended":
+        raise HTTPException(status_code=403, detail="This salon is not currently accepting online bookings.")
+
+    customer_name = str(data.get("customerName") or "").strip()
+    customer_phone = str(data.get("customerPhone") or "").strip()
+    digits = "".join(filter(str.isdigit, customer_phone))
+    if not customer_name or len(digits) < 10:
+        raise HTTPException(status_code=400, detail="Valid full name and 10-digit WhatsApp/mobile number are required.")
+
+    date_val = str(data.get("date") or datetime.utcnow().strftime("%Y-%m-%d")).strip()
+    raw_start = str(data.get("startTime") or data.get("time") or "11:00 AM").strip()
+    start_mins = parse_time_to_minutes(raw_start)
+    start_time_val = minutes_to_24h(start_mins)
+
+    service_ids = data.get("serviceIds") or ([data.get("serviceId")] if data.get("serviceId") else [])
+    db_services = []
+    if service_ids:
+        db_services = db.query(ServiceModel).filter(
+            ServiceModel.salon_id == salon.id,
+            ServiceModel.id.in_(service_ids),
+        ).all()
+
+    if db_services:
+        total_duration = sum(int(s.duration_minutes or 45) for s in db_services)
+        total_price = sum(float(s.price or 0.0) for s in db_services)
+        service_names = " + ".join(s.name for s in db_services)
+        primary_service_id = db_services[0].id
+    else:
+        total_duration = int(data.get("durationMinutes") or 45)
+        total_price = float(data.get("price") or 0.0)
+        service_names = str(data.get("serviceName") or "Salon Service")
+        primary_service_id = str(data.get("serviceId") or "")
+
+    end_mins = start_mins + total_duration
+    end_time_val = minutes_to_24h(end_mins)
+
+    staff_id_val = str(data.get("staffId") or "").strip()
+    staff_name_val = str(data.get("staffName") or "").strip()
+    if staff_id_val and staff_id_val != "any":
+        st = db.query(StaffModel).filter(StaffModel.id == staff_id_val, StaffModel.salon_id == salon.id).first()
+        if st:
+            staff_name_val = st.name
+    elif not staff_name_val or staff_id_val == "any":
+        first_staff = db.query(StaffModel).filter(StaffModel.salon_id == salon.id, StaffModel.is_active == True).first()
+        staff_id_val = first_staff.id if first_staff else ""
+        staff_name_val = first_staff.name if first_staff else "Senior Specialist"
+
+    # Check stylist availability overlap
+    day_appts = db.query(AppointmentModel).filter(
+        AppointmentModel.salon_id == salon.id,
+        AppointmentModel.date == date_val,
+    ).all()
+    for c_apt in day_appts:
+        if normalize_appt_status(c_apt.status) not in ("confirmed", "in_service", "scheduled"):
+            continue
+        same_staff = (staff_id_val and c_apt.staff_id == staff_id_val) or (
+            staff_name_val and c_apt.staff_name == staff_name_val
+        )
+        if not same_staff:
+            continue
+        c_start = parse_time_to_minutes(c_apt.start_time or c_apt.time)
+        c_end = parse_time_to_minutes(c_apt.end_time) if c_apt.end_time else (c_start + int(c_apt.duration_minutes or 45))
+        if (start_mins < c_end) and (end_mins > c_start):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{staff_name_val} is already booked at {raw_start} on {date_val}. Please pick another time slot."
+            )
+
+    # Upsert customer within this salon
+    customer = db.query(CustomerModel).filter(
+        CustomerModel.salon_id == salon.id,
+        CustomerModel.phone.ilike(f"%{digits[-10:]}%")
+    ).first()
+    if not customer:
+        customer = CustomerModel(
+            id=f"cst_{uuid.uuid4().hex[:12]}",
+            salon_id=salon.id,
+            name=customer_name,
+            phone=customer_phone,
+            email=str(data.get("customerEmail") or ""),
+            notes=str(data.get("notes") or ""),
+            preferred_staff=staff_name_val,
+            loyalty_points=50,
+            last_visit_date=date_val,
+            tags_json=json.dumps(["Online Booking"]),
+        )
+        db.add(customer)
+        db.flush()
+
+    apt = AppointmentModel(
+        id=f"apt_{uuid.uuid4().hex[:12]}",
+        salon_id=salon.id,
+        customer_id=customer.id,
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        staff_id=staff_id_val,
+        staff_name=staff_name_val,
+        service_id=primary_service_id,
+        service_name=service_names,
+        date=date_val,
+        start_time=start_time_val,
+        end_time=end_time_val,
+        time=raw_start,
+        duration_minutes=total_duration,
+        price=total_price,
+        status="Confirmed",
+        source="website",
+        notes=str(data.get("notes") or ""),
+    )
+    db.add(apt)
+    db.commit()
+    db.refresh(apt)
+
+    return {
+        "success": True,
+        "bookingCode": f"RX-{apt.id[-6:].upper()}",
+        "appointment": apt.to_dict(),
+        "salon": _serialize_public_salon(salon),
+    }
+
+
+@router.post("/public/salons/{salon_slug}/feedback", tags=["PublicBooking"])
+def submit_public_feedback(
+    salon_slug: str,
+    data: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db)
+):
+    """Saves public customer review directly into the matched salon without requiring staff auth."""
+    slug_clean = (salon_slug or "").strip().lower()
+    salon = db.query(SalonModel).filter(
+        (SalonModel.slug.ilike(slug_clean)) | (SalonModel.id == salon_slug)
+    ).first()
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found.")
+
+    rating_val = max(1, min(5, int(data.get("rating") or data.get("serviceRating") or 5)))
+    tags = data.get("tags") or data.get("improvementTags") or []
+    fb = FeedbackModel(
+        id=f"fb_{uuid.uuid4().hex[:12]}",
+        salon_id=salon.id,
+        customer_name=str(data.get("customerName") or "Guest").strip(),
+        customer_phone=str(data.get("customerPhone") or "").strip(),
+        staff_name=str(data.get("staffName") or "").strip(),
+        service_name=str(data.get("serviceName") or "").strip(),
+        rating=rating_val,
+        comment=str(data.get("comment") or "").strip(),
+        date=datetime.utcnow().strftime("%Y-%m-%d"),
+        tags_json=json.dumps(tags if isinstance(tags, list) else []),
+    )
+    db.add(fb)
+    salon.review_count = int(salon.review_count or 0) + 1
+    db.commit()
+    db.refresh(fb)
+    return {"success": True, "feedback": fb.to_dict()}
+
+
+# ============================================================================
+# Master Admin Endpoints (Strictly Gated to MASTER_ADMIN Role)
+# ============================================================================
+@router.get("/admin/salons", tags=["MasterAdmin"])
+def admin_list_salons(
+    context: tuple[UserModel, SalonModel] = Depends(require_master_admin),
+    db: Session = Depends(get_db)
+):
+    salons = db.query(SalonModel).all()
+    results = []
+    for s in salons:
+        manager = db.query(UserModel).filter(
+            UserModel.salon_id == s.id,
+            UserModel.role.in_(["SALON_MANAGER", "owner", "manager"]),
+        ).first()
+        inv_total = sum(
+            float(inv.grand_total or 0.0)
+            for inv in db.query(InvoiceModel).filter(InvoiceModel.salon_id == s.id, InvoiceModel.status == "paid").all()
+        )
+        cust_count = db.query(CustomerModel).filter(CustomerModel.salon_id == s.id).count()
+        results.append({
+            **s.to_dict(),
+            "ownerName": manager.name if manager else s.name,
+            "ownerPhone": (manager.phone if manager and manager.phone else s.phone),
+            "totalGmv": round(inv_total, 2),
+            "customersCount": cust_count,
+        })
+    return {"salons": results}
+
+
+@router.post("/admin/salons/{salon_id}/mark-paid", tags=["MasterAdmin"])
+def admin_mark_salon_paid(
+    salon_id: str,
+    payload: Dict[str, Any] = Body(default={}),
+    context: tuple[UserModel, SalonModel] = Depends(require_master_admin),
+    db: Session = Depends(get_db)
+):
+    salon = db.query(SalonModel).filter(SalonModel.id == salon_id).first()
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+    plan = str(payload.get("plan") or salon.subscription_plan or "pro").lower()
+    salon.subscription_status = "active"
+    salon.subscription_plan = plan if plan in ("pro", "enterprise") else "pro"
+    salon.trial_ends_at = None
+    db.commit()
+    db.refresh(salon)
+    return {"success": True, "salon": salon.to_dict()}
+
+
+@router.post("/admin/salons/{salon_id}/set-status", tags=["MasterAdmin"])
+def admin_set_salon_status(
+    salon_id: str,
+    payload: Dict[str, Any] = Body(...),
+    context: tuple[UserModel, SalonModel] = Depends(require_master_admin),
+    db: Session = Depends(get_db)
+):
+    """Master Admin manual override to activate Pro/Enterprise, extend trials, or suspend non-paying salons."""
+    salon = db.query(SalonModel).filter(SalonModel.id == salon_id).first()
+    if not salon:
+        raise HTTPException(status_code=404, detail="Salon not found")
+
+    next_status = str(payload.get("status") or "").strip().lower()
+    if next_status not in ("active", "trial", "expired", "suspended"):
+        raise HTTPException(status_code=400, detail="Status must be active, trial, expired, or suspended.")
+
+    salon.subscription_status = next_status
+    if next_status == "active":
+        plan = str(payload.get("plan") or salon.subscription_plan or "pro").lower()
+        salon.subscription_plan = plan if plan in ("pro", "enterprise") else "pro"
+        salon.trial_ends_at = None
+    elif next_status == "trial":
+        trial_days = max(1, min(90, int(payload.get("trialDays") or 7)))
+        salon.subscription_plan = "free_trial"
+        salon.trial_started_at = salon.trial_started_at or datetime.utcnow()
+        salon.trial_ends_at = datetime.utcnow() + timedelta(days=trial_days)
+
+    db.commit()
+    db.refresh(salon)
+    return {"success": True, "salon": salon.to_dict()}
 

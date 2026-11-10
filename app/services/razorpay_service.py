@@ -93,17 +93,10 @@ class RazorpayService:
                     "is_live": True
                 }
 
-        # Sandbox / Fallback for local dev or when keys not yet provisioned
-        mock_order_id = f"order_sub_{uuid.uuid4().hex[:14]}"
         return {
-            "success": True,
-            "order_id": mock_order_id,
-            "amount": amount,
-            "currency": "INR",
-            "key_id": self.key_id or "rzp_test_Ruvexi_sandbox",
-            "plan": plan.lower(),
+            "success": False,
+            "error": "Razorpay billing gateway is not configured on this server. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to enable live plan upgrades.",
             "is_live": False,
-            "notice": "Operating in Ruvexi Platform Subscription Sandbox. Add live RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET to backend/.env."
         }
 
     def create_order(self, amount: float, receipt: str, notes: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -148,10 +141,10 @@ class RazorpayService:
     def verify_payment_signature(self, order_id: str, payment_id: str, signature: str) -> bool:
         """
         Verifies standard Razorpay HMAC SHA-256 signature after client checkout popup.
+        Fails closed if key_secret is not configured.
         """
-        if not self.key_secret:
-            # Pass in sandbox mode
-            return True
+        if not self.key_secret or not order_id or not payment_id or not signature:
+            return False
 
         msg = f"{order_id}|{payment_id}".encode("utf-8")
         generated_signature = hmac.new(
@@ -165,9 +158,10 @@ class RazorpayService:
     def verify_webhook_signature(self, body_bytes: bytes, signature_header: str) -> bool:
         """
         Verifies Razorpay Webhook X-Razorpay-Signature with webhook secret.
+        Fails closed if webhook_secret or signature header is missing.
         """
-        if not self.webhook_secret:
-            return True
+        if not self.webhook_secret or not signature_header:
+            return False
 
         generated_signature = hmac.new(
             self.webhook_secret.encode("utf-8"),
