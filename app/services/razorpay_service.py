@@ -1,4 +1,4 @@
-﻿# ============================================================================
+# ============================================================================
 # Ruvexi Platform SaaS Subscription Service (Razorpay Integration)
 # Razorpay is used exclusively for Ruvexi platform subscriptions (B2B SaaS).
 # Salon client billing uses direct-to-salon UPI (0% fees) and cash/POS terminals.
@@ -176,5 +176,116 @@ class RazorpayService:
         ).hexdigest()
 
         return hmac.compare_digest(generated_signature, signature_header)
+
+    def create_upi_qr_code(
+        self,
+        amount: float,
+        invoice_number: str,
+        salon_id: str,
+        salon_name: str,
+        close_after_seconds: int = 300,
+    ) -> Dict[str, Any]:
+        """
+        Creates a single-use fixed-amount Razorpay UPI QR when Razorpay API keys are configured.
+        Enables zero-webhook polling via `poll_payment_status`.
+        """
+        if not self.is_configured or not self.client:
+            return {
+                "success": False,
+                "auto_verify_supported": False,
+                "error": "Razorpay API keys not configured; use direct salon UPI VPA with manual verification.",
+            }
+
+        import time
+        amount_paise = int(round(amount * 100))
+        try:
+            qr = self.client.qrcode.create({
+                "type": "upi_qr",
+                "name": f"{salon_name[:40]} - {invoice_number}",
+                "usage": "single_use",
+                "fixed_amount": True,
+                "payment_amount": amount_paise,
+                "description": f"Invoice {invoice_number}",
+                "close_by": int(time.time()) + max(120, close_after_seconds),
+                "notes": {
+                    "salon_id": salon_id,
+                    "invoice_number": invoice_number,
+                },
+            })
+            return {
+                "success": True,
+                "auto_verify_supported": True,
+                "qr_id": qr.get("id"),
+                "image_url": qr.get("image_url"),
+                "status": qr.get("status", "active"),
+                "raw": qr,
+            }
+        except Exception as e:
+            return {"success": False, "auto_verify_supported": False, "error": str(e)}
+
+    def poll_payment_status(self, reference_id: str) -> Dict[str, Any]:
+        """
+        Polls Razorpay directly (no webhooks required) for an Order (`order_...`),
+        UPI QR (`qr_...`), or Payment Link (`plink_...`).
+        """
+        if not self.is_configured or not self.client:
+            return {
+                "success": False,
+                "auto_verify_supported": False,
+                "paid": False,
+                "status": "manual_verification_required",
+            }
+
+        ref = (reference_id or "").strip()
+        try:
+            if ref.startswith("qr_"):
+                qr = self.client.qrcode.fetch(ref)
+                payments_resp = self.client.qrcode.fetch_all_payments(ref)
+                items = payments_resp.get("items", []) if isinstance(payments_resp, dict) else []
+                captured = next((p for p in items if p.get("status") in ("captured", "authorized")), None)
+                is_paid = bool(captured) or int(qr.get("payments_amount_received", 0)) > 0
+                acquirer = (captured or {}).get("acquirer_data", {}) or {}
+                utr = acquirer.get("rrn") or acquirer.get("upi_transaction_id") or (captured or {}).get("id")
+                return {
+                    "success": True,
+                    "auto_verify_supported": True,
+                    "paid": is_paid,
+                    "status": "paid" if is_paid else qr.get("status", "active"),
+                    "payment_id": (captured or {}).get("id"),
+                    "utr": utr,
+                }
+
+            if ref.startswith("order_"):
+                order = self.client.order.fetch(ref)
+                payments_resp = self.client.order.payments(ref)
+                items = payments_resp.get("items", []) if isinstance(payments_resp, dict) else []
+                captured = next((p for p in items if p.get("status") == "captured"), None)
+                is_paid = order.get("status") == "paid" or bool(captured)
+                acquirer = (captured or {}).get("acquirer_data", {}) or {}
+                utr = acquirer.get("rrn") or acquirer.get("upi_transaction_id") or (captured or {}).get("id")
+                return {
+                    "success": True,
+                    "auto_verify_supported": True,
+                    "paid": is_paid,
+                    "status": "paid" if is_paid else order.get("status", "attempted"),
+                    "payment_id": (captured or {}).get("id"),
+                    "utr": utr,
+                }
+
+            if ref.startswith("plink_"):
+                plink = self.client.payment_link.fetch(ref)
+                is_paid = plink.get("status") == "paid"
+                return {
+                    "success": True,
+                    "auto_verify_supported": True,
+                    "paid": is_paid,
+                    "status": plink.get("status", "created"),
+                    "payment_id": (plink.get("payments") or [{}])[0].get("payment_id"),
+                    "utr": None,
+                }
+
+            return {"success": False, "auto_verify_supported": True, "paid": False, "status": "unknown_reference"}
+        except Exception as e:
+            return {"success": False, "auto_verify_supported": True, "paid": False, "error": str(e)}
 
 razorpay_service = RazorpayService()

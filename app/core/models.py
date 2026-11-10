@@ -1,4 +1,4 @@
-﻿import json
+import json
 import uuid
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -79,15 +79,19 @@ class SalonModel(Base):
         return max(0, delta.days)
 
     def to_dict(self):
+        from .security import decrypt_secret
         is_active = self.is_trial_active()
         days_left = self.trial_days_left()
 
         def mask_token(t: Optional[str]) -> Optional[str]:
             if not t:
                 return None
-            if len(t) <= 10:
-                return "â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢"
-            return f"{t[:4]}â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢{t[-4:]}"
+            raw = decrypt_secret(t) or ""
+            if not raw:
+                return None
+            if len(raw) <= 10:
+                return "••••••••"
+            return f"{raw[:4]}••••••••{raw[-4:]}"
 
         return {
             "id": self.id,
@@ -142,7 +146,7 @@ class SalonModel(Base):
                 "isWebhookVerified": bool(self.whatsapp_webhook_verified),
                 "lastTestedAt": self.whatsapp_last_tested_at.isoformat() if self.whatsapp_last_tested_at else None,
                 "errorMessage": self.whatsapp_error_message,
-                "templatesStatus": self.whatsapp_templates_status or "APPROVED (3 Active)",
+                "templatesStatus": self.whatsapp_templates_status or ("Pending Template Sync" if self.whatsapp_status == "connected" else "unverified"),
                 "maskedToken": mask_token(self.whatsapp_access_token),
             }
         }

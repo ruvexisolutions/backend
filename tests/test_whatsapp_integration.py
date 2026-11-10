@@ -1,4 +1,4 @@
-﻿import os
+import os
 import pytest
 from app.core.models import WhatsAppMessageModel, SalonModel
 
@@ -113,7 +113,13 @@ def test_successful_connection_and_token_secrecy(client, seed_test_data, db_sess
     salon_dict = cfg_data["salon"]
     assert raw_token not in str(salon_dict)
     assert salon_dict["whatsapp"]["maskedToken"].startswith("EAAG")
-    assert "â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" in salon_dict["whatsapp"]["maskedToken"]
+    assert "••••••••" in salon_dict["whatsapp"]["maskedToken"]
+
+    # Confirm DB column stores Fernet ciphertext, never plaintext token
+    salon_b = seed_test_data["salon_b"]
+    db_session.refresh(salon_b)
+    assert salon_b.whatsapp_access_token.startswith("enc::")
+    assert raw_token not in salon_b.whatsapp_access_token
 
     # Check status endpoint also returns masked token
     res_status = client.get(
@@ -327,3 +333,34 @@ def test_pos_billing_resiliency_when_whatsapp_offline(client, seed_test_data):
     data = res.json()
     assert data["is_fallback"] is True
     assert "not configured" in data["message"].lower() or "offline" in data["message"].lower()
+
+
+def test_webhook_hmac_signature_enforcement(client, monkeypatch):
+    """When META_APP_SECRET is configured, webhooks require valid X-Hub-Signature-256."""
+    import hmac
+    import hashlib
+    import json
+
+    secret = "test_meta_app_secret_2026"
+    monkeypatch.setenv("META_APP_SECRET", secret)
+
+    body_dict = {"object": "whatsapp_business_account", "entry": []}
+    raw_bytes = json.dumps(body_dict).encode("utf-8")
+
+    # Missing or bad signature must return 403
+    bad_res = client.post(
+        "/api/v1/whatsapp/webhook",
+        content=raw_bytes,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": "sha256=invalid"},
+    )
+    assert bad_res.status_code == 403
+
+    # Valid HMAC-SHA256 signature must succeed
+    valid_sig = "sha256=" + hmac.new(secret.encode("utf-8"), raw_bytes, hashlib.sha256).hexdigest()
+    ok_res = client.post(
+        "/api/v1/whatsapp/webhook",
+        content=raw_bytes,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": valid_sig},
+    )
+    assert ok_res.status_code == 200
+    assert ok_res.json()["status"] == "ok"

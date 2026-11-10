@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import uuid
 import secrets
@@ -37,6 +37,8 @@ from app.core.security import (
     verify_password,
     create_access_token,
     decode_access_token,
+    encrypt_secret,
+    decrypt_secret,
 )
 from app.services.razorpay_service import razorpay_service
 from app.services.whatsapp_service import whatsapp_service
@@ -852,7 +854,7 @@ def update_salon(
     _, salon = context
 
     # Check trial restriction: Tax/GST configuration locked during trial
-    if "gstin" in data and salon.subscription_status == "trial":
+    if "gstin" in data and data["gstin"] != salon.gstin and salon.subscription_status == "trial":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Official GSTIN and tax setting customization is locked during the 7-day trial. Upgrade to Pro."
@@ -1886,7 +1888,7 @@ def create_invoice(
             if amount_received < grand_total:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Insufficient cash received. Final payable amount is â‚¹{grand_total:,.2f}, but only â‚¹{amount_received:,.2f} received."
+                    detail=f"Insufficient cash received. Final payable amount is ₹{grand_total:,.2f}, but only ₹{amount_received:,.2f} received."
                 )
             change_given = round(amount_received - grand_total, 2)
             txn_ref = data.get("transactionReference") or f"BC-TXN-CASH-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
@@ -1897,7 +1899,19 @@ def create_invoice(
                     status_code=400,
                     detail="UPI payment is currently disabled or not configured for this salon. Please select Cash or configure UPI in Salon Settings."
                 )
-            txn_ref = data.get("transactionReference") or data.get("upiReference") or f"BC-TXN-UPI-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+            provided_ref = str(data.get("transactionReference") or data.get("upiReference") or data.get("paymentReference") or "").strip()
+            if provided_ref and not provided_ref.startswith("BC-"):
+                duplicate_payment = db.query(PaymentModel).filter(
+                    PaymentModel.salon_id == salon_id,
+                    PaymentModel.status == "completed",
+                    PaymentModel.provider_ref_id == provided_ref,
+                ).first()
+                if duplicate_payment:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Duplicate Bank Reference / UTR '{provided_ref}' detected. This reference was already used for another paid bill."
+                    )
+            txn_ref = provided_ref or f"BC-TXN-UPI-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
             verification_method = "manual_receptionist_upi_verification"
         elif payment_method == "WALLET":
             if not cust:
@@ -2386,7 +2400,7 @@ def confirm_invoice_payment(
         if amount_received < invoice.grand_total:
             raise HTTPException(
                 status_code=400,
-                detail=f"Insufficient cash received. Final payable amount is â‚¹{invoice.grand_total:,.2f}, but only â‚¹{amount_received:,.2f} received."
+                detail=f"Insufficient cash received. Final payable amount is ₹{invoice.grand_total:,.2f}, but only ₹{amount_received:,.2f} received."
             )
 
         change_given = round(amount_received - invoice.grand_total, 2)
@@ -2407,7 +2421,20 @@ def confirm_invoice_payment(
                 detail="Payment verification required. Front desk staff must explicitly verify that funds were received in the salon bank/UPI account before confirming payment."
             )
 
-        txn_ref = payload.get("transactionReference") or payload.get("bankReference") or f"BC-TXN-UPI-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
+        provided_ref = str(payload.get("transactionReference") or payload.get("bankReference") or "").strip()
+        if provided_ref:
+            duplicate_payment = db.query(PaymentModel).filter(
+                PaymentModel.salon_id == salon.id,
+                PaymentModel.status == "completed",
+                PaymentModel.provider_ref_id == provided_ref,
+            ).first()
+            if duplicate_payment:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Duplicate Bank Reference / UTR '{provided_ref}' detected. This reference has already been used for another paid bill."
+                )
+
+        txn_ref = provided_ref or f"BC-TXN-UPI-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
         verification_method = "manual_receptionist_upi_verification"
 
     else:
@@ -3087,6 +3114,57 @@ def verify_razorpay_payment(
     return {"success": True, "payment_id": payment_id, "status": "verified"}
 
 
+@router.post("/payments/create-auto-verify-qr", tags=["Payments"])
+def create_auto_verify_upi_qr(
+    data: Dict[str, Any] = Body(...),
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+):
+    """Creates a single-use gateway UPI QR (when Razorpay keys exist) for webhook-free status polling."""
+    _, salon = context
+    amount = float(data.get("amount") or 0)
+    invoice_number = str(data.get("invoiceNumber") or f"INV-{uuid.uuid4().hex[:6].upper()}")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
+    return razorpay_service.create_upi_qr_code(
+        amount=amount,
+        invoice_number=invoice_number,
+        salon_id=salon.id,
+        salon_name=salon.name,
+    )
+
+
+@router.get("/payments/poll-status/{reference_id}", tags=["Payments"])
+def poll_payment_status_without_webhook(
+    reference_id: str,
+    invoice_id: Optional[str] = None,
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+    db: Session = Depends(get_db),
+):
+    """
+    Polls Razorpay directly for Order / UPI QR / Payment Link completion (zero webhooks required).
+    If `invoice_id` is passed and gateway confirms paid, settles the invoice idempotently.
+    """
+    user, salon = context
+    poll_res = razorpay_service.poll_payment_status(reference_id)
+
+    if poll_res.get("paid") and invoice_id:
+        inv = db.query(InvoiceModel).filter(
+            InvoiceModel.id == invoice_id,
+            InvoiceModel.salon_id == salon.id
+        ).first()
+        if inv and inv.status != "paid":
+            inv.status = "paid"
+            inv.payment_method = "UPI / Gateway Verified"
+            inv.payment_reference = poll_res.get("utr") or poll_res.get("payment_id") or reference_id
+            inv.amount_received = inv.grand_total
+            inv.paid_at = datetime.utcnow()
+            inv.verified_by_user_id = user.id
+            inv.verified_by_name = f"Gateway Poll ({user.name})"
+            db.commit()
+
+    return poll_res
+
+
 @router.post("/payments/webhook", tags=["Payments"])
 async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
     """Handles incoming Razorpay Webhook events (Platform SaaS subscriptions and renewals)."""
@@ -3147,11 +3225,23 @@ async def get_whatsapp_status(
     _, salon = context
 
     templates = []
-    if salon.whatsapp_status == "connected" and salon.whatsapp_access_token:
+    decrypted_token = decrypt_secret(salon.whatsapp_access_token) if salon.whatsapp_access_token else ""
+    if salon.whatsapp_status == "connected" and decrypted_token:
         try:
-            templates = await whatsapp_service.fetch_templates(salon.whatsapp_waba_id, salon.whatsapp_access_token)
+            templates = await whatsapp_service.fetch_templates(salon.whatsapp_waba_id, decrypted_token)
         except Exception:
             templates = []
+
+    approved_count = sum(1 for t in templates if t.get("status") == "APPROVED")
+    if salon.whatsapp_status != "connected":
+        computed_tpl_status = "unverified"
+    elif templates:
+        if any(t.get("status") == "SANDBOX_PREVIEW" for t in templates):
+            computed_tpl_status = f"Sandbox ({len(templates)} Preview)"
+        else:
+            computed_tpl_status = f"{approved_count} Approved / {len(templates)} Total"
+    else:
+        computed_tpl_status = salon.whatsapp_templates_status or "No Templates Found (Add in Meta)"
 
     salon_dict = salon.to_dict()
     wa_info = salon_dict.get("whatsapp", {})
@@ -3162,7 +3252,7 @@ async def get_whatsapp_status(
 
     return {
         "status": salon.whatsapp_status or "not_connected",
-        "isConnected": bool(salon.whatsapp_phone_number_id and salon.whatsapp_access_token and salon.whatsapp_status == "connected"),
+        "isConnected": bool(salon.whatsapp_phone_number_id and decrypted_token and salon.whatsapp_status == "connected"),
         "displayNumber": salon.whatsapp_display_number or salon.phone,
         "verifiedName": salon.whatsapp_verified_name or salon.name,
         "phoneNumberId": salon.whatsapp_phone_number_id,
@@ -3172,7 +3262,7 @@ async def get_whatsapp_status(
         "webhookVerified": bool(salon.whatsapp_webhook_verified),
         "webhookUrl": webhook_url,
         "webhookVerifyToken": verify_token,
-        "templatesStatus": salon.whatsapp_templates_status or ("APPROVED (4 Active)" if salon.whatsapp_status == "connected" else "unverified"),
+        "templatesStatus": computed_tpl_status,
         "templates": templates,
         "lastTestedAt": salon.whatsapp_last_tested_at.isoformat() if salon.whatsapp_last_tested_at else None,
         "errorMessage": salon.whatsapp_error_message,
@@ -3230,17 +3320,28 @@ async def configure_whatsapp_manual(
             detail=f"Meta WhatsApp credentials verification failed: {error_msg}"
         )
 
-    # Validated: Persist credentials scoped to authenticated manager's salon
+    # Validated: Persist encrypted credentials scoped to authenticated manager's salon
+    fetched_templates = await whatsapp_service.fetch_templates(waba_id=waba_id or None, access_token=access_token)
+    approved_cnt = sum(1 for t in fetched_templates if t.get("status") == "APPROVED")
+    if fetched_templates:
+        tpl_status_label = (
+            f"Sandbox ({len(fetched_templates)} Preview)"
+            if any(t.get("status") == "SANDBOX_PREVIEW" for t in fetched_templates)
+            else f"{approved_cnt} Approved / {len(fetched_templates)} Total"
+        )
+    else:
+        tpl_status_label = "No Templates Found (Add in Meta)"
+
     salon.whatsapp_phone_number_id = phone_number_id
-    salon.whatsapp_waba_id = waba_id or f"waba_{uuid.uuid4().hex[:10]}"
-    salon.whatsapp_access_token = access_token
+    salon.whatsapp_waba_id = waba_id or None
+    salon.whatsapp_access_token = encrypt_secret(access_token)
     salon.whatsapp_display_number = display_number or validation.get("display_phone_number") or salon.phone
     salon.whatsapp_verified_name = verified_name or validation.get("verified_name") or salon.name
     salon.whatsapp_quality_rating = validation.get("quality_rating") or "GREEN"
     salon.whatsapp_status = "connected"
     salon.whatsapp_last_tested_at = datetime.utcnow()
     salon.whatsapp_error_message = None
-    salon.whatsapp_templates_status = "APPROVED (4 Active)"
+    salon.whatsapp_templates_status = tpl_status_label
 
     db.commit()
     db.refresh(salon)
@@ -3264,9 +3365,9 @@ async def test_whatsapp_connection(
     """
     _, salon = context
 
-    # Allow testing with payload credentials or existing saved credentials
+    # Allow testing with payload credentials or decrypted existing saved credentials
     phone_number_id = data.get("phoneNumberId") or salon.whatsapp_phone_number_id
-    access_token = data.get("accessToken") or salon.whatsapp_access_token
+    access_token = data.get("accessToken") or decrypt_secret(salon.whatsapp_access_token)
     waba_id = data.get("wabaId") or salon.whatsapp_waba_id
 
     if not phone_number_id or not access_token:
@@ -3340,16 +3441,22 @@ async def handle_whatsapp_embedded_signup(
             detail="Failed to exchange authorization code with Meta. Please check your Meta App credentials."
         )
 
-    salon.whatsapp_phone_number_id = str(phone_number_id or "10982348911029")
-    salon.whatsapp_waba_id = str(waba_id or f"waba_{uuid.uuid4().hex[:10]}")
-    salon.whatsapp_access_token = str(access_token)
+    if not phone_number_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Meta Phone Number ID is required from Embedded Signup session."
+        )
+
+    salon.whatsapp_phone_number_id = str(phone_number_id)
+    salon.whatsapp_waba_id = str(waba_id) if waba_id else None
+    salon.whatsapp_access_token = encrypt_secret(str(access_token))
     salon.whatsapp_display_number = str(display_number or salon.phone)
     salon.whatsapp_verified_name = str(verified_name or salon.name)
     salon.whatsapp_quality_rating = "GREEN"
     salon.whatsapp_status = "connected"
     salon.whatsapp_last_tested_at = datetime.utcnow()
     salon.whatsapp_error_message = None
-    salon.whatsapp_templates_status = "APPROVED (4 Active)"
+    salon.whatsapp_templates_status = "Connected (Sync Templates in Meta)"
 
     db.commit()
     db.refresh(salon)
@@ -3458,6 +3565,7 @@ async def send_whatsapp_bill(
         }
 
     try:
+        decrypted_token = decrypt_secret(salon.whatsapp_access_token)
         result = await whatsapp_service.send_bill_notification(
             to_phone=to_phone,
             customer_name=customer_name,
@@ -3467,7 +3575,8 @@ async def send_whatsapp_bill(
             salon_name=salon.name,
             payment_link=payment_link,
             phone_number_id=salon.whatsapp_phone_number_id,
-            access_token=salon.whatsapp_access_token
+            access_token=decrypted_token,
+            waba_id=salon.whatsapp_waba_id,
         )
 
         msg_record = WhatsAppMessageModel(
@@ -3475,7 +3584,7 @@ async def send_whatsapp_bill(
             recipient_phone=to_phone,
             customer_name=customer_name,
             message_type="bill_receipt",
-            template_name="Ruvexi_service_receipt",
+            template_name=result.get("template_name") or "ruvexi_service_receipt",
             meta_message_id=result.get("message_id"),
             status="sent" if result.get("success") else "failed",
             idempotency_key=idempotency_key,
@@ -3544,6 +3653,7 @@ async def send_whatsapp_appointment_reminder(
         }
 
     try:
+        decrypted_token = decrypt_secret(salon.whatsapp_access_token)
         result = await whatsapp_service.send_appointment_confirmation(
             to_phone=to_phone,
             customer_name=customer_name,
@@ -3552,7 +3662,8 @@ async def send_whatsapp_appointment_reminder(
             date_time=date_time,
             salon_name=salon.name,
             phone_number_id=salon.whatsapp_phone_number_id,
-            access_token=salon.whatsapp_access_token
+            access_token=decrypted_token,
+            waba_id=salon.whatsapp_waba_id,
         )
 
         msg_record = WhatsAppMessageModel(
@@ -3560,7 +3671,7 @@ async def send_whatsapp_appointment_reminder(
             recipient_phone=to_phone,
             customer_name=customer_name,
             message_type="appointment_confirmation",
-            template_name="Ruvexi_appointment_confirmation",
+            template_name=result.get("template_name") or "ruvexi_appointment_confirmation",
             meta_message_id=result.get("message_id"),
             status="sent" if result.get("success") else "failed",
             idempotency_key=idempotency_key,
@@ -3595,13 +3706,15 @@ async def send_whatsapp_campaign(
             "message": "WhatsApp not connected. Campaign notification deferred."
         }
 
+    decrypted_token = decrypt_secret(salon.whatsapp_access_token)
     result = await whatsapp_service.send_retention_campaign(
         to_phone=to_phone,
         customer_name=customer_name,
         custom_message=message_text,
         salon_name=salon.name,
         phone_number_id=salon.whatsapp_phone_number_id,
-        access_token=salon.whatsapp_access_token
+        access_token=decrypted_token,
+        waba_id=salon.whatsapp_waba_id,
     )
 
     msg_record = WhatsAppMessageModel(
@@ -3609,7 +3722,7 @@ async def send_whatsapp_campaign(
         recipient_phone=to_phone,
         customer_name=customer_name,
         message_type="retention_campaign",
-        template_name="Ruvexi_rebooking_touchup",
+        template_name=result.get("template_name") or "ruvexi_rebooking_touchup",
         meta_message_id=result.get("message_id"),
         status="sent" if result.get("success") else "failed",
         idempotency_key=idempotency_key,
@@ -3651,12 +3764,19 @@ async def meta_webhook_event_handler(
     db: Session = Depends(get_db)
 ):
     """
-    Handles incoming WhatsApp delivery status reports (sent, delivered, read, failed) & updates
-    the corresponding WhatsAppMessageModel idempotently.
-    Also confirms webhook configuration status for the salon.
+    Handles incoming WhatsApp delivery status reports (sent, delivered, read, failed),
+    verifies Meta X-Hub-Signature-256 HMAC when configured, & updates WhatsAppMessageModel idempotently.
     """
+    raw_body = await request.body()
+    sig_header = request.headers.get("X-Hub-Signature-256")
+    if not whatsapp_service.verify_webhook_signature(raw_body, sig_header):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid X-Hub-Signature-256 webhook signature."
+        )
+
     try:
-        body = await request.json()
+        body = json.loads(raw_body.decode("utf-8")) if raw_body else {}
         entries = body.get("entry", [])
 
         status_hierarchy = {"pending": 0, "sent": 1, "delivered": 2, "read": 3, "failed": 4}
