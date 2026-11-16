@@ -13,6 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, Body, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.services.email_service import (
+    send_staff_invitation_email,
+    send_password_reset_email,
+    send_otp_email,
+    send_welcome_email,
+)
 from app.core.models import (
     SalonModel,
     UserModel,
@@ -415,6 +421,7 @@ async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = 
 
     email = google_user["email"].strip().lower()
     display_name = (google_user.get("name") or email.split("@")[0]).strip()
+    google_picture = (google_user.get("picture") or "").strip()
     user = db.query(UserModel).filter(UserModel.email.ilike(email)).first()
     is_new_user = False
 
@@ -451,7 +458,7 @@ async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = 
             phone="",
             password_hash=hash_password(secrets.token_urlsafe(32)),
             role="SALON_MANAGER",
-            avatar=display_name[0].upper(),
+            avatar=google_picture or display_name[0].upper(),
         )
         db.add(user)
         db.commit()
@@ -462,6 +469,10 @@ async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = 
         salon = db.query(SalonModel).filter(SalonModel.id == user.salon_id).first()
         if not salon:
             raise HTTPException(status_code=404, detail="Salon workspace not found.")
+        if google_picture and user.avatar != google_picture:
+            user.avatar = google_picture
+            db.commit()
+            db.refresh(user)
 
     raw_role = (user.role or "").upper()
     normalized_role = (
@@ -544,6 +555,8 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     db.add(new_user)
     db.commit()
 
+    send_welcome_email(new_user.email, new_user.name, new_salon.name)
+
     token = create_access_token({
         "sub": new_user.id,
         "email": new_user.email,
@@ -596,6 +609,7 @@ def forgot_password(payload: Dict[str, Any] = Body(...), db: Session = Depends(g
             {"sub": user.id, "email": user.email, "purpose": "password_reset"},
             expires_delta=timedelta(hours=1),
         )
+        send_password_reset_email(user.email, user.name, reset_token)
         # Security: Never return reset tokens in production HTTP payloads
         if os.getenv("ALLOW_DEV_RESET_TOKEN", "").lower() == "true":
             response["reset_token"] = reset_token
@@ -687,6 +701,9 @@ def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depen
     )
     db.add(otp_record)
     db.commit()
+
+    if user.email:
+        send_otp_email(user.email, user.name, otp_code)
 
     response_payload = {
         "success": True,
@@ -804,6 +821,7 @@ def create_receptionist_invitation(
             detail="This receptionist has an active pending invitation to another salon. Each receptionist can strictly belong to only ONE salon."
         )
 
+    branch_name = None
     if branch_id:
         branch_obj = db.query(BranchModel).filter(
             BranchModel.id == branch_id,
@@ -811,6 +829,8 @@ def create_receptionist_invitation(
         ).first()
         if not branch_obj:
             branch_id = None
+        else:
+            branch_name = branch_obj.name
 
     invite_token = uuid.uuid4().hex + uuid.uuid4().hex
     invitation = InvitationModel(
@@ -826,11 +846,25 @@ def create_receptionist_invitation(
     db.commit()
     db.refresh(invitation)
 
+    email_result = send_staff_invitation_email(
+        to_email=email,
+        salon_name=salon.name,
+        inviter_name=user.name,
+        invite_token=invite_token,
+        branch_name=branch_name,
+    )
+
     return {
         "success": True,
         "invitation": invitation.to_dict(),
         "inviteUrl": f"/join/{invite_token}",
-        "message": f"Receptionist invitation generated for {email}. Valid for 48 hours."
+        "emailSent": bool(email_result.get("sent")),
+        "emailError": email_result.get("error"),
+        "message": (
+            f"Receptionist invitation emailed to {email} via Resend. Valid for 48 hours."
+            if email_result.get("sent")
+            else f"Receptionist invitation generated for {email} (email delivery pending: {email_result.get('error')})."
+        ),
     }
 
 
@@ -1517,6 +1551,92 @@ def delete_customer(
 # ============================================================================
 # Services & Pricing
 # ============================================================================
+@router.post("/services/seed-olg", tags=["Services"])
+@router.post("/public/salons/seed-olg-services", tags=["PublicBooking"])
+def seed_olg_services_endpoint(db: Session = Depends(get_db)):
+    """Seeds or refreshes the full 125-service catalog for OLG Hair Saloon (darshanurs54@gmail.com)."""
+    try:
+        from app.core.olg_catalog import OLG_CATALOG
+        olg_salon = db.query(SalonModel).filter(
+            (SalonModel.email.ilike("darshanurs54@gmail.com")) |
+            (SalonModel.id == "sln_1dc700ec03ea") |
+            (SalonModel.name.ilike("%olg%"))
+        ).first()
+
+        if not olg_salon:
+            now_dt = datetime.utcnow()
+            olg_salon = SalonModel(
+                id="sln_1dc700ec03ea",
+                name="OLG Professional Unisex Salon & HairFixing",
+                slug="darshan-urs-s-atelier-7b0e",
+                branch="Chickmagalur Studio",
+                city="Chickmagalur",
+                currency="₹",
+                chairs=5,
+                category="Hair Studio & Aesthetic Spa",
+                phone="8296294666",
+                email="darshanurs54@gmail.com",
+                address="opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
+                timing="10:00 AM - 09:00 PM (All Days)",
+                rating=4.9,
+                review_count=418,
+                trial_started_at=now_dt,
+                trial_ends_at=now_dt + timedelta(days=365),
+                subscription_status="active",
+                subscription_plan="pro",
+                upi_id="8296294666@ybl",
+                upi_payee_name="OLG Professional Unisex Salon",
+                cash_enabled=True,
+                upi_enabled=True,
+            )
+            db.add(olg_salon)
+            db.commit()
+
+        # Seed services idempotently
+        existing_srvs = {
+            (s.name.strip().lower(), s.category.strip().lower()): s
+            for s in db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
+        }
+        for item in OLG_CATALOG:
+            key = (item["name"].strip().lower(), item["category"].strip().lower())
+            if key in existing_srvs:
+                s = existing_srvs[key]
+                s.price = item["price"]
+                s.duration_minutes = item["duration_minutes"]
+                s.buffer_minutes = item.get("buffer_minutes", 5)
+                s.description = item.get("description", "")
+                s.is_active = True
+                s.is_online_bookable = True
+                s.popular = item.get("popular", False)
+            else:
+                s = ServiceModel(
+                    id=item["id"],
+                    salon_id=olg_salon.id,
+                    name=item["name"],
+                    category=item["category"],
+                    price=item["price"],
+                    duration_minutes=item["duration_minutes"],
+                    buffer_minutes=item.get("buffer_minutes", 5),
+                    description=item.get("description", ""),
+                    is_active=True,
+                    is_online_bookable=True,
+                    popular=item.get("popular", False),
+                )
+                db.add(s)
+        db.commit()
+        services = db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
+        return {
+            "success": True,
+            "salonId": olg_salon.id,
+            "salonName": olg_salon.name,
+            "count": len(services),
+            "services": [s.to_dict() for s in services]
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/services", tags=["Services"])
 def get_services(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),

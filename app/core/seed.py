@@ -221,6 +221,109 @@ def seed_database(db: Session):
     except Exception:
         pass
 
+    # Seed services for OLG Hair Saloon (darshanurs54@gmail.com)
+    try:
+        from .olg_catalog import OLG_CATALOG
+        olg_salon = db.query(SalonModel).filter(
+            (SalonModel.email.ilike("darshanurs54@gmail.com")) |
+            (SalonModel.id == "sln_1dc700ec03ea") |
+            (SalonModel.name.ilike("%olg%"))
+        ).first()
+
+        if not olg_salon:
+            now_dt = datetime.utcnow()
+            olg_salon = SalonModel(
+                id="sln_1dc700ec03ea",
+                name="OLG Professional Unisex Salon & HairFixing",
+                slug="darshan-urs-s-atelier-7b0e",
+                branch="Chickmagalur Studio",
+                city="Chickmagalur",
+                currency="₹",
+                chairs=5,
+                category="Hair Studio & Aesthetic Spa",
+                phone="8296294666",
+                email="darshanurs54@gmail.com",
+                address="opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
+                timing="10:00 AM - 09:00 PM (All Days)",
+                rating=4.9,
+                review_count=418,
+                trial_started_at=now_dt,
+                trial_ends_at=now_dt + timedelta(days=365),
+                subscription_status="active",
+                subscription_plan="pro",
+                upi_id="8296294666@ybl",
+                upi_payee_name="OLG Professional Unisex Salon",
+                cash_enabled=True,
+                upi_enabled=True,
+            )
+            db.add(olg_salon)
+            db.commit()
+
+        # Ensure darshanurs54@gmail.com user exists and has valid password
+        darshan_user = db.query(UserModel).filter(
+            (UserModel.email.ilike("darshanurs54@gmail.com")) |
+            (UserModel.salon_id == olg_salon.id)
+        ).first()
+        if darshan_user:
+            darshan_user.salon_id = olg_salon.id
+            if not darshan_user.phone:
+                darshan_user.phone = "8296294666"
+            darshan_user.role = "SALON_MANAGER"
+            if not darshan_user.password_hash or len(darshan_user.password_hash) < 10:
+                darshan_user.password_hash = hash_password("Ruvexi2026!")
+            db.commit()
+        else:
+            import uuid
+            darshan_user = UserModel(
+                id=f"usr_{uuid.uuid4().hex[:12]}",
+                salon_id=olg_salon.id,
+                name="Darshan Urs",
+                email="darshanurs54@gmail.com",
+                phone="8296294666",
+                role="SALON_MANAGER",
+                avatar="D",
+                password_hash=hash_password("Ruvexi2026!"),
+            )
+            db.add(darshan_user)
+            db.commit()
+
+        # Seed all 125 services idempotently
+        existing_srvs = {
+            (s.name.strip().lower(), s.category.strip().lower()): s
+            for s in db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
+        }
+        for item in OLG_CATALOG:
+            key = (item["name"].strip().lower(), item["category"].strip().lower())
+            if key in existing_srvs:
+                s = existing_srvs[key]
+                s.price = item["price"]
+                s.duration_minutes = item["duration_minutes"]
+                s.buffer_minutes = item.get("buffer_minutes", 5)
+                s.description = item.get("description", "")
+                s.is_active = True
+                s.is_online_bookable = True
+                s.popular = item.get("popular", False)
+            else:
+                s = ServiceModel(
+                    id=item["id"],
+                    salon_id=olg_salon.id,
+                    name=item["name"],
+                    category=item["category"],
+                    price=item["price"],
+                    duration_minutes=item["duration_minutes"],
+                    buffer_minutes=item.get("buffer_minutes", 5),
+                    description=item.get("description", ""),
+                    is_active=True,
+                    is_online_bookable=True,
+                    popular=item.get("popular", False),
+                )
+                db.add(s)
+        db.commit()
+        print(f"[Seed] Successfully ensured {len(OLG_CATALOG)} services for OLG salon ({olg_salon.name})")
+    except Exception as e_olg:
+        db.rollback()
+        print(f"[Seed Notice] OLG services seed notice: {e_olg}")
+
     # Check if default salon exists. If it was removed by the user, do not recreate or seed dummy accounts.
     existing_salon = db.query(SalonModel).filter(SalonModel.id == DEFAULT_SALON_ID).first()
     if not existing_salon:
