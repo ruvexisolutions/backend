@@ -397,10 +397,8 @@ def seed_database(db: Session):
         if chethan_user:
             chethan_user.salon_id = chethan_salon.id
             chethan_user.role = "MASTER_ADMIN"
-            if not chethan_user.phone:
-                chethan_user.phone = "8296294666"
-            if not chethan_user.password_hash or len(chethan_user.password_hash) < 10:
-                chethan_user.password_hash = hash_password("Ruvexi2026!")
+            chethan_user.phone = "8296294666"
+            chethan_user.password_hash = hash_password("Ruvexi2026!")
             db.commit()
         else:
             import uuid
