@@ -617,7 +617,8 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
         currency=salon_data.get("currency") or "â‚¹",
         chairs=int(salon_data.get("chairs") or 6),
         category=salon_data.get("category") or "Hair & Beauty Atelier",
-        gstin=salon_data.get("gstin") or "27AABCB9999F1Z1",
+        gstin=salon_data.get("gstin") or "",
+        auto_gst=False,
         phone=phone or "+91 98000 00000",
         email=email,
         trial_started_at=now,
@@ -1261,13 +1262,7 @@ def update_salon(
 ):
     _, salon = context
 
-    # Check trial restriction: Tax/GST configuration locked during trial
-    if "gstin" in data and data["gstin"] != salon.gstin and salon.subscription_status == "trial":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Official GSTIN and tax setting customization is locked during the 7-day trial. Upgrade to Pro."
-        )
-
+    # Remove GST restrictions
     if "name" in data: salon.name = data["name"]
     if "branch" in data: salon.branch = data["branch"]
     if "city" in data: salon.city = data["city"]
@@ -2436,25 +2431,12 @@ def create_invoice(
         taxable_amount = max(0.0, taxable_amount - points_discount)
         cust.loyalty_points = max(0, cust.loyalty_points - points_redeemed)
 
-    default_tax_pct = 0.0
-    tax_percent = float(data.get("taxPercent") if data.get("taxPercent") is not None else default_tax_pct)
+    tax_percent = 0.0
+    tax_amount = 0.0
+    cgst = 0.0
+    sgst = 0.0
     tip_amount = max(0.0, float(data.get("tipAmount") or 0.0))
-
-    if bool(data.get("gstIncluded")):
-        # Line prices are tax-inclusive; extract GST component without adding extra tax
-        if tax_percent > 0:
-            base_excl = round(taxable_amount / (1.0 + tax_percent / 100.0), 2)
-            tax_amount = round(taxable_amount - base_excl, 2)
-        else:
-            tax_amount = 0.0
-        cgst = round(tax_amount / 2.0, 2)
-        sgst = round(tax_amount - cgst, 2)
-        grand_total = round(taxable_amount + tip_amount, 2)
-    else:
-        tax_amount = round((taxable_amount * tax_percent) / 100.0, 2)
-        cgst = round(tax_amount / 2.0, 2)
-        sgst = round(tax_amount - cgst, 2)
-        grand_total = round(taxable_amount + tax_amount + tip_amount, 2)
+    grand_total = round(taxable_amount + tip_amount, 2)
 
     # Infer top-level staff_id/staff_name from items if omitted
     top_staff_id = str(data.get("staffId") or "").strip()
