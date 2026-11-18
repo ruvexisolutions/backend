@@ -341,6 +341,105 @@ def seed_database(db: Session):
         db.rollback()
         print(f"[Seed Notice] OLG services seed notice: {e_olg}")
 
-    # Clean production mode: no dummy or mock salons/users are seeded.
-    # Real salons and users are registered dynamically via authentication & onboarding.
+    # Explicit purge of decommissioned demo / test accounts and salons
+    try:
+        purge_decommissioned_accounts(db)
+    except Exception as e_purge:
+        db.rollback()
+        print(f"[Seed Notice] Decommissioned accounts purge notice: {e_purge}")
+
     return
+
+
+def purge_decommissioned_accounts(db: Session) -> list:
+    """Permanently purges decommissioned demo, test, and placeholder accounts and salons."""
+    DECOMMISSIONED_EMAILS = [
+        "ruvexisolutions@gmail.com",
+        "verified.manager.1794256393@ruvexi.com",
+        "founder@ruvexisolutions.com",
+        "director.test@ruvexi.com",
+        "probe_check_1234@ruvexi.com",
+        "sunil@billcaresalon.com",
+    ]
+    DECOMMISSIONED_SLUGS = [
+        "ruvexis-salon-&-spa-86a0",
+        "ruvexi-luxury-flagship-fd63",
+        "ruvexi-atelier-bengaluru-480a",
+        "ruvexi-test-atelier-a101",
+        "probe-salon-ce49",
+        "aura-luxury-salon-&-spa-9f22",
+    ]
+    DECOMMISSIONED_SALON_IDS = [
+        "sln_768aef32ad07",
+        "sln_5ba8ec0b93cf",
+        "sln_494b36e0007b",
+        "sln_82e722804d9b",
+        "sln_49029c100894",
+        "sln_66c2243a0701",
+    ]
+
+    from .models import (
+        SalonModel,
+        UserModel,
+        CustomerModel,
+        ServiceModel,
+        StaffModel,
+        InventoryModel,
+        AppointmentModel,
+        InvoiceModel,
+        FollowUpModel,
+        FeedbackModel,
+        PaymentModel,
+        BranchModel,
+        CashRegisterShiftModel,
+        ExpenseModel,
+        InventoryLedgerModel,
+        WhatsAppMessageModel,
+        InvitationModel,
+    )
+
+    # 1. Locate all salons matching criteria
+    target_salons = db.query(SalonModel).filter(
+        (SalonModel.id.in_(DECOMMISSIONED_SALON_IDS)) |
+        (SalonModel.slug.in_(DECOMMISSIONED_SLUGS)) |
+        (SalonModel.email.in_(DECOMMISSIONED_EMAILS))
+    ).all()
+
+    target_salon_ids = set(s.id for s in target_salons)
+    for sid in DECOMMISSIONED_SALON_IDS:
+        target_salon_ids.add(sid)
+
+    removed_salons_info = []
+
+    if target_salon_ids:
+        # Cascade delete child entities
+        db.query(StaffModel).filter(StaffModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(ServiceModel).filter(ServiceModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(CustomerModel).filter(CustomerModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(AppointmentModel).filter(AppointmentModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(InvoiceModel).filter(InvoiceModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(PaymentModel).filter(PaymentModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(FollowUpModel).filter(FollowUpModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(FeedbackModel).filter(FeedbackModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(InventoryModel).filter(InventoryModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(InventoryLedgerModel).filter(InventoryLedgerModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(ExpenseModel).filter(ExpenseModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(BranchModel).filter(BranchModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(CashRegisterShiftModel).filter(CashRegisterShiftModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(WhatsAppMessageModel).filter(WhatsAppMessageModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+        db.query(InvitationModel).filter(InvitationModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
+
+        for s in target_salons:
+            removed_salons_info.append({"id": s.id, "name": s.name, "email": s.email})
+            db.delete(s)
+
+    # 2. Locate and delete matching users
+    db.query(UserModel).filter(
+        (UserModel.salon_id.in_(target_salon_ids)) |
+        (UserModel.email.in_(DECOMMISSIONED_EMAILS))
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    if removed_salons_info:
+        print(f"[Decommission Purge] Successfully removed {len(removed_salons_info)} decommissioned salons: {removed_salons_info}")
+    return removed_salons_info

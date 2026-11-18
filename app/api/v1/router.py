@@ -1742,7 +1742,7 @@ def seed_olg_services_endpoint(db: Session = Depends(get_db)):
                 rating=4.9,
                 review_count=418,
                 trial_started_at=now_dt,
-                trial_ends_at=now_dt + timedelta(days=365),
+                trial_ends_at=None,
                 subscription_status="active",
                 subscription_plan="pro",
                 upi_id="8296294666@ybl",
@@ -1753,7 +1753,6 @@ def seed_olg_services_endpoint(db: Session = Depends(get_db)):
             db.add(olg_salon)
             db.commit()
 
-        # Seed services idempotently
         existing_srvs = {
             (s.name.strip().lower(), s.category.strip().lower()): s
             for s in db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
@@ -1785,14 +1784,19 @@ def seed_olg_services_endpoint(db: Session = Depends(get_db)):
                 )
                 db.add(s)
         db.commit()
-        services = db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
-        return {
-            "success": True,
-            "salonId": olg_salon.id,
-            "salonName": olg_salon.name,
-            "count": len(services),
-            "services": [s.to_dict() for s in services]
-        }
+        return {"status": "ok", "message": f"Ensured {len(OLG_CATALOG)} services for {olg_salon.name}"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/public/salons/purge-decommissioned", tags=["PublicBooking"])
+def purge_decommissioned_endpoint(db: Session = Depends(get_db)):
+    """Triggers the permanent purge of decommissioned demo, test, and placeholder accounts and salons."""
+    try:
+        from app.core.seed import purge_decommissioned_accounts
+        removed = purge_decommissioned_accounts(db)
+        return {"status": "ok", "removed_count": len(removed), "removed_salons": removed}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
