@@ -167,7 +167,7 @@ def ensure_schema_compatibility():
                     else:
                         conn.execute(text("ALTER TABLE appointments ADD COLUMN chair_number INTEGER DEFAULT 1"))
 
-        # Customers wallet_balance
+        # Customers wallet_balance & branch_id
         if "customers" in tables:
             cust_cols = [c["name"] for c in inspector.get_columns("customers")]
             if "wallet_balance" not in cust_cols:
@@ -176,6 +176,32 @@ def ensure_schema_compatibility():
                         conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS wallet_balance FLOAT DEFAULT 0.0"))
                     else:
                         conn.execute(text("ALTER TABLE customers ADD COLUMN wallet_balance FLOAT DEFAULT 0.0"))
+            if "branch_id" not in cust_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64) DEFAULT ''"))
+                    else:
+                        conn.execute(text("ALTER TABLE customers ADD COLUMN branch_id VARCHAR(64) DEFAULT ''"))
+
+        # Invoices branch_id
+        if "invoices" in tables:
+            inv_cols = [c["name"] for c in inspector.get_columns("invoices")]
+            if "branch_id" not in inv_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64) DEFAULT ''"))
+                    else:
+                        conn.execute(text("ALTER TABLE invoices ADD COLUMN branch_id VARCHAR(64) DEFAULT ''"))
+
+        # Expenses branch_id
+        if "expenses" in tables:
+            exp_cols = [c["name"] for c in inspector.get_columns("expenses")]
+            if "branch_id" not in exp_cols:
+                with engine.begin() as conn:
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE expenses ADD COLUMN IF NOT EXISTS branch_id VARCHAR(64) DEFAULT ''"))
+                    else:
+                        conn.execute(text("ALTER TABLE expenses ADD COLUMN branch_id VARCHAR(64) DEFAULT ''"))
 
         # Services consumable materials & image_url
         if "services" in tables:

@@ -284,6 +284,7 @@ class CustomerModel(Base):
     last_service = Column(String(128), default="")
     preferred_staff = Column(String(128), default="Priya Sharma")
     vip_tier = Column(String(64), default="Silver Member")
+    branch_id = Column(String(64), default="")
     formula_notes = Column(Text, default="")
     patch_test_status = Column(String(64), default="Verified Safe")
     patch_test_date = Column(String(64), default="")
@@ -318,6 +319,7 @@ class CustomerModel(Base):
             "lastService": self.last_service,
             "preferredStaff": self.preferred_staff,
             "vipTier": self.vip_tier,
+            "branchId": self.branch_id or "",
             "formulaNotes": self.formula_notes,
             "patchTestStatus": self.patch_test_status,
             "patchTestDate": self.patch_test_date,
@@ -516,6 +518,7 @@ class InvoiceModel(Base):
 
     id = Column(String(64), primary_key=True, default=lambda: f"inv_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False)
+    branch_id = Column(String(64), default="")
     invoice_number = Column(String(64), unique=True, index=True, nullable=False)
     customer_id = Column(String(64), default="cst_walkin")
     customer_name = Column(String(128), nullable=False)
@@ -565,6 +568,7 @@ class InvoiceModel(Base):
             "id": self.id,
             "invoiceNumber": self.invoice_number,
             "salonId": self.salon_id,
+            "branchId": self.branch_id or "",
             "customerId": self.customer_id,
             "customerName": self.customer_name,
             "customerPhone": self.customer_phone,
@@ -757,6 +761,7 @@ class ExpenseModel(Base):
 
     id = Column(String(64), primary_key=True, default=lambda: f"exp_{uuid.uuid4().hex[:12]}")
     salon_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    branch_id = Column(String(64), default="")
     title = Column(String(128), nullable=False)
     category = Column(String(64), default="Supplies") # 'Supplies', 'Laundry', 'Refreshments', 'Utilities', 'Maintenance', 'Marketing'
     amount = Column(Float, nullable=False)
@@ -770,6 +775,7 @@ class ExpenseModel(Base):
         return {
             "id": self.id,
             "salonId": self.salon_id,
+            "branchId": self.branch_id or "",
             "title": self.title,
             "category": self.category,
             "amount": self.amount,

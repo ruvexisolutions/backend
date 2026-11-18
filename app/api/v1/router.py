@@ -9,7 +9,7 @@ import urllib.parse
 import httpx
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Body, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Body, Request, status, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -1414,6 +1414,7 @@ def delete_branch(
 # ============================================================================
 @router.get("/customers", tags=["Customers"])
 def get_customers(
+    branch_id: Optional[str] = Query(None),
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
@@ -1424,6 +1425,15 @@ def get_customers(
         .order_by(CustomerModel.id.desc())
         .all()
     )
+    if branch_id:
+        def is_accessible(c: CustomerModel) -> bool:
+            vip = (c.vip_tier or "").lower()
+            is_member = any(t in vip for t in ("gold", "silver", "platinum", "diamond", "vip", "prime", "elite", "member")) and "standard" not in vip
+            if is_member:
+                return True
+            return not c.branch_id or c.branch_id == branch_id
+
+        customers = [c for c in customers if is_accessible(c)]
     return [c.to_dict() for c in customers]
 
 
@@ -1461,6 +1471,7 @@ def create_customer(
     customer = CustomerModel(
         id=f"cst_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
+        branch_id=str(data.get("branchId") or data.get("branch_id") or "").strip(),
         name=data.get("name", "New Client"),
         phone=phone_input,
         email=data.get("email", ""),
@@ -1628,6 +1639,7 @@ def update_customer(
         elif k == "formulaNotes": customer.formula_notes = v
         elif k == "preferredStaff": customer.preferred_staff = v
         elif k == "vipTier": customer.vip_tier = v
+        elif k in ("branchId", "branch_id"): customer.branch_id = str(v)
         elif k == "tags": customer.tags_json = json.dumps(v)
         elif k in ("totalSpend", "totalSpent"):
             customer.total_spend = float(v)
@@ -2321,16 +2333,15 @@ def delete_appointment(
 # ============================================================================
 @router.get("/invoices", tags=["Invoices"])
 def get_invoices(
+    branch_id: Optional[str] = Query(None),
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
     _, salon = context
-    invoices = (
-        db.query(InvoiceModel)
-        .filter(InvoiceModel.salon_id == salon.id)
-        .order_by(InvoiceModel.id.desc())
-        .all()
-    )
+    query = db.query(InvoiceModel).filter(InvoiceModel.salon_id == salon.id)
+    if branch_id:
+        query = query.filter((InvoiceModel.branch_id == branch_id) | (InvoiceModel.branch_id == "") | (InvoiceModel.branch_id.is_(None)))
+    invoices = query.order_by(InvoiceModel.id.desc()).all()
     return [inv.to_dict() for inv in invoices]
 
 
@@ -2450,6 +2461,7 @@ def create_invoice(
     invoice = InvoiceModel(
         id=f"inv_{uuid.uuid4().hex[:12]}",
         salon_id=salon_id,
+        branch_id=str(data.get("branchId") or data.get("branch_id") or "").strip(),
         invoice_number=inv_number,
         customer_id=cust.id if cust else data.get("customerId", "cst_walkin"),
         customer_name=cust.name if cust else (cust_name or "Walk-in Guest"),
@@ -3399,12 +3411,13 @@ def get_reports_summary(
     range: Optional[str] = "month",
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    branch_id: Optional[str] = None,
     context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
     db: Session = Depends(get_db)
 ):
     """
     Computes server-side revenue, tax, discount, commission, expense, service popularity,
-    feedback ratings, and profitability analytics filtered by date range.
+    feedback ratings, and profitability analytics filtered by date range and branch.
     """
     _, salon = context
     all_invoices = db.query(InvoiceModel).filter(InvoiceModel.salon_id == salon.id).all()
@@ -3413,6 +3426,11 @@ def get_reports_summary(
     appointments = db.query(AppointmentModel).filter(AppointmentModel.salon_id == salon.id).all()
     customers = db.query(CustomerModel).filter(CustomerModel.salon_id == salon.id).all()
     feedbacks = db.query(FeedbackModel).filter(FeedbackModel.salon_id == salon.id).all()
+
+    if branch_id:
+        all_invoices = [i for i in all_invoices if not i.branch_id or i.branch_id == branch_id]
+        all_expenses = [e for e in all_expenses if not e.branch_id or e.branch_id == branch_id]
+        appointments = [a for a in appointments if not a.branch_id or a.branch_id == branch_id]
 
     now = datetime.utcnow()
     range_key = str(range or "month").lower()
@@ -3717,17 +3735,16 @@ def close_register_shift(
 # ============================================================================
 @router.get("/expenses", tags=["Expenses"])
 def get_expenses(
+    branch_id: Optional[str] = Query(None),
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
     """Lists salon expenses ordered by date."""
     _, salon = context
-    expenses = (
-        db.query(ExpenseModel)
-        .filter(ExpenseModel.salon_id == salon.id)
-        .order_by(ExpenseModel.id.desc())
-        .all()
-    )
+    query = db.query(ExpenseModel).filter(ExpenseModel.salon_id == salon.id)
+    if branch_id:
+        query = query.filter((ExpenseModel.branch_id == branch_id) | (ExpenseModel.branch_id == "") | (ExpenseModel.branch_id.is_(None)))
+    expenses = query.order_by(ExpenseModel.id.desc()).all()
     return [e.to_dict() for e in expenses]
 
 
@@ -3746,6 +3763,7 @@ def create_expense(
 
     expense = ExpenseModel(
         salon_id=salon.id,
+        branch_id=str(data.get("branchId") or data.get("branch_id") or "").strip(),
         title=title,
         category=data.get("category", "Supplies"),
         amount=amount,
