@@ -248,7 +248,7 @@ def seed_database(db: Session):
                 rating=4.9,
                 review_count=418,
                 trial_started_at=now_dt,
-                trial_ends_at=now_dt + timedelta(days=365),
+                trial_ends_at=None,
                 subscription_status="active",
                 subscription_plan="pro",
                 upi_id="8296294666@ybl",
@@ -258,6 +258,23 @@ def seed_database(db: Session):
             )
             db.add(olg_salon)
             db.commit()
+        else:
+            olg_salon.subscription_status = "active"
+            olg_salon.subscription_plan = "pro"
+            olg_salon.trial_ends_at = None
+            db.commit()
+
+        # Ensure all salons tied to darshanurs54@gmail.com have active Pro subscription access
+        darshan_salons = db.query(SalonModel).filter(
+            (SalonModel.email.ilike("darshanurs54@gmail.com")) |
+            (SalonModel.id == "sln_1dc700ec03ea") |
+            (SalonModel.name.ilike("%olg%"))
+        ).all()
+        for s in darshan_salons:
+            s.subscription_status = "active"
+            s.subscription_plan = "pro"
+            s.trial_ends_at = None
+        db.commit()
 
         # Ensure darshanurs54@gmail.com user exists and has valid password
         darshan_user = db.query(UserModel).filter(
@@ -268,7 +285,7 @@ def seed_database(db: Session):
             darshan_user.salon_id = olg_salon.id
             if not darshan_user.phone:
                 darshan_user.phone = "8296294666"
-            darshan_user.role = "SALON_MANAGER"
+            darshan_user.role = "MASTER_ADMIN"
             if not darshan_user.password_hash or len(darshan_user.password_hash) < 10:
                 darshan_user.password_hash = hash_password("Ruvexi2026!")
             db.commit()
@@ -280,7 +297,7 @@ def seed_database(db: Session):
                 name="Darshan Urs",
                 email="darshanurs54@gmail.com",
                 phone="8296294666",
-                role="SALON_MANAGER",
+                role="MASTER_ADMIN",
                 avatar="D",
                 password_hash=hash_password("Ruvexi2026!"),
             )
