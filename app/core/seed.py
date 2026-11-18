@@ -341,6 +341,180 @@ def seed_database(db: Session):
         db.rollback()
         print(f"[Seed Notice] OLG services seed notice: {e_olg}")
 
+    # Configure chethanchethu524@gmail.com as MASTER_ADMIN owning "OLG Unisex Salon & HairFixing" with 3 branches & 125 services
+    try:
+        from .olg_catalog import OLG_CATALOG
+        chethan_salon = db.query(SalonModel).filter(
+            (SalonModel.email.ilike("chethanchethu524@gmail.com")) |
+            (SalonModel.id == "sln_3857fe44e88a")
+        ).first()
+
+        now_dt = datetime.utcnow()
+        if not chethan_salon:
+            chethan_salon = SalonModel(
+                id="sln_3857fe44e88a",
+                name="OLG Unisex Salon & HairFixing",
+                slug="chethan-shyva-s-atelier-604a",
+                branch="Chikmagalur",
+                city="Chikmagalur",
+                currency="₹",
+                chairs=6,
+                category="Hair Studio & Aesthetic Spa",
+                phone="8296294666",
+                email="chethanchethu524@gmail.com",
+                address="opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
+                timing="10:00 AM - 09:00 PM (All Days)",
+                rating=4.9,
+                review_count=418,
+                trial_started_at=now_dt,
+                trial_ends_at=None,
+                subscription_status="active",
+                subscription_plan="pro",
+                upi_id="8296294666@ybl",
+                upi_payee_name="OLG Unisex Salon & HairFixing",
+                cash_enabled=True,
+                upi_enabled=True,
+            )
+            db.add(chethan_salon)
+            db.commit()
+        else:
+            chethan_salon.name = "OLG Unisex Salon & HairFixing"
+            chethan_salon.city = "Chikmagalur"
+            chethan_salon.branch = "Chikmagalur"
+            chethan_salon.subscription_status = "active"
+            chethan_salon.subscription_plan = "pro"
+            chethan_salon.trial_ends_at = None
+            chethan_salon.upi_id = "8296294666@ybl"
+            chethan_salon.upi_payee_name = "OLG Unisex Salon & HairFixing"
+            chethan_salon.cash_enabled = True
+            chethan_salon.upi_enabled = True
+            db.commit()
+
+        # Ensure user chethanchethu524@gmail.com has MASTER_ADMIN role
+        chethan_user = db.query(UserModel).filter(
+            UserModel.email.ilike("chethanchethu524@gmail.com")
+        ).first()
+        if chethan_user:
+            chethan_user.salon_id = chethan_salon.id
+            chethan_user.role = "MASTER_ADMIN"
+            if not chethan_user.phone:
+                chethan_user.phone = "8296294666"
+            if not chethan_user.password_hash or len(chethan_user.password_hash) < 10:
+                chethan_user.password_hash = hash_password("Ruvexi2026!")
+            db.commit()
+        else:
+            import uuid
+            chethan_user = UserModel(
+                id=f"usr_{uuid.uuid4().hex[:12]}",
+                salon_id=chethan_salon.id,
+                name="Chethan Shyva",
+                email="chethanchethu524@gmail.com",
+                phone="8296294666",
+                role="MASTER_ADMIN",
+                avatar="C",
+                password_hash=hash_password("Ruvexi2026!"),
+            )
+            db.add(chethan_user)
+            db.commit()
+
+        # Ensure 3 branches under this salon: chikmagalur, hassan, belur
+        branches_data = [
+            {
+                "id": f"brn_{chethan_salon.id[-8:]}_chik",
+                "name": "Chikmagalur",
+                "code": "BR-CHIK",
+                "city": "Chikmagalur",
+                "address": "opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
+                "phone": "8296294666",
+                "email": "chethanchethu524@gmail.com",
+                "chairs": 6,
+            },
+            {
+                "id": f"brn_{chethan_salon.id[-8:]}_hassan",
+                "name": "Hassan",
+                "code": "BR-HASSAN",
+                "city": "Hassan",
+                "address": "Main Road, Near City Bus Stand, Hassan",
+                "phone": "8296294666",
+                "email": "chethanchethu524@gmail.com",
+                "chairs": 6,
+            },
+            {
+                "id": f"brn_{chethan_salon.id[-8:]}_belur",
+                "name": "Belur",
+                "code": "BR-BELUR",
+                "city": "Belur",
+                "address": "Temple Road, Belur",
+                "phone": "8296294666",
+                "email": "chethanchethu524@gmail.com",
+                "chairs": 5,
+            },
+        ]
+
+        existing_branches = {b.name.strip().lower(): b for b in db.query(BranchModel).filter(BranchModel.salon_id == chethan_salon.id).all()}
+        for b_data in branches_data:
+            key = b_data["name"].strip().lower()
+            if key in existing_branches:
+                br = existing_branches[key]
+                br.code = b_data["code"]
+                br.city = b_data["city"]
+                br.address = b_data["address"]
+                br.phone = b_data["phone"]
+                br.email = b_data["email"]
+                br.is_active = True
+            else:
+                br = BranchModel(
+                    id=b_data["id"],
+                    salon_id=chethan_salon.id,
+                    name=b_data["name"],
+                    code=b_data["code"],
+                    city=b_data["city"],
+                    address=b_data["address"],
+                    phone=b_data["phone"],
+                    email=b_data["email"],
+                    chairs=b_data["chairs"],
+                    is_active=True,
+                )
+                db.add(br)
+        db.commit()
+
+        # Seed all 125 services into chethan_salon
+        existing_srvs = {
+            (s.name.strip().lower(), s.category.strip().lower()): s
+            for s in db.query(ServiceModel).filter(ServiceModel.salon_id == chethan_salon.id).all()
+        }
+        for item in OLG_CATALOG:
+            key = (item["name"].strip().lower(), item["category"].strip().lower())
+            if key in existing_srvs:
+                s = existing_srvs[key]
+                s.price = item["price"]
+                s.duration_minutes = item["duration_minutes"]
+                s.buffer_minutes = item.get("buffer_minutes", 5)
+                s.description = item.get("description", "")
+                s.is_active = True
+                s.is_online_bookable = True
+                s.popular = item.get("popular", False)
+            else:
+                s = ServiceModel(
+                    id=f"srv_c_{item['id']}",
+                    salon_id=chethan_salon.id,
+                    name=item["name"],
+                    category=item["category"],
+                    price=item["price"],
+                    duration_minutes=item["duration_minutes"],
+                    buffer_minutes=item.get("buffer_minutes", 5),
+                    description=item.get("description", ""),
+                    is_active=True,
+                    is_online_bookable=True,
+                    popular=item.get("popular", False),
+                )
+                db.add(s)
+        db.commit()
+        print(f"[Seed] Successfully configured Chethan MASTER_ADMIN salon ({chethan_salon.name}) with 3 branches and {len(OLG_CATALOG)} services.")
+    except Exception as e_chethan:
+        db.rollback()
+        print(f"[Seed Notice] Chethan salon setup notice: {e_chethan}")
+
     # Explicit purge of decommissioned demo / test accounts and salons
     try:
         purge_decommissioned_accounts(db)

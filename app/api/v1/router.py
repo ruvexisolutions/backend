@@ -1802,6 +1802,31 @@ def purge_decommissioned_endpoint(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/public/salons/sync-chethan", tags=["PublicBooking"])
+def sync_chethan_endpoint(db: Session = Depends(get_db)):
+    """Seeds and updates Chethan Shyva's salon to OLG Unisex Salon & HairFixing with 3 branches and 125 services."""
+    try:
+        from app.core.seed import seed_database
+        seed_database(db)
+        from app.core.models import SalonModel, BranchModel, ServiceModel, UserModel
+        salon = db.query(SalonModel).filter(SalonModel.email.ilike("chethanchethu524@gmail.com")).first()
+        branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all() if salon else []
+        services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all() if salon else []
+        user = db.query(UserModel).filter(UserModel.email.ilike("chethanchethu524@gmail.com")).first()
+        return {
+            "status": "ok",
+            "salon": salon.name if salon else None,
+            "salonId": salon.id if salon else None,
+            "user": user.email if user else None,
+            "role": user.role if user else None,
+            "branches": [b.name for b in branches],
+            "servicesCount": len(services),
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/services", tags=["Services"])
 def get_services(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
