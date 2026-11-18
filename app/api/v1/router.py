@@ -275,7 +275,34 @@ def get_bootstrap_data(
     salon_id = salon.id
 
     customers = [c.to_dict() for c in db.query(CustomerModel).filter(CustomerModel.salon_id == salon_id).all()]
-    services = [s.to_dict() for s in db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).all()]
+    services_query = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).all()
+    # Auto-seed OLG catalog if services are missing or if salon is OLG salon
+    if len(services_query) < 10 or "olg" in (salon.name or "").lower():
+        try:
+            from app.core.olg_catalog import OLG_CATALOG
+            existing_keys = {(s.name.strip().lower(), s.category.strip().lower()) for s in services_query}
+            for item in OLG_CATALOG:
+                key = (item["name"].strip().lower(), item["category"].strip().lower())
+                if key not in existing_keys:
+                    s = ServiceModel(
+                        id=f"srv_{salon_id[:6]}_{item['id']}",
+                        salon_id=salon_id,
+                        name=item["name"],
+                        category=item["category"],
+                        price=item["price"],
+                        duration_minutes=item["duration_minutes"],
+                        buffer_minutes=item.get("buffer_minutes", 5),
+                        description=item.get("description", ""),
+                        is_active=True,
+                        is_online_bookable=True,
+                        popular=item.get("popular", False),
+                    )
+                    db.add(s)
+            db.commit()
+            services_query = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).all()
+        except Exception:
+            db.rollback()
+    services = [s.to_dict() for s in services_query]
     staff = [st.to_dict() for st in db.query(StaffModel).filter(StaffModel.salon_id == salon_id).all()]
     inventory = [i.to_dict() for i in db.query(InventoryModel).filter(InventoryModel.salon_id == salon_id).all()]
     appointments = [
@@ -1176,7 +1203,11 @@ def update_salon(
     if "bannerGradient" in data: salon.banner_gradient = data["bannerGradient"] or None
     if "accentColor" in data: salon.accent_color = str(data["accentColor"] or "#FACC15")
     if "upiId" in data:
-        salon.upi_id = data["upiId"]
+        raw_upi = str(data["upiId"] or "").strip()
+        salon.upi_id = raw_upi or None
+        salon.upi_enabled = bool(raw_upi)
+    if "upiPayeeName" in data:
+        salon.upi_payee_name = str(data["upiPayeeName"] or "").strip() or salon.name
     if "bankAccountName" in data:
         salon.bank_account_name = data["bankAccountName"]
     if "bankAccountNumber" in data:
@@ -1349,8 +1380,8 @@ def create_customer(
         name=data.get("name", "New Client"),
         phone=phone_input,
         email=data.get("email", ""),
-        gender=data.get("gender", "female"),
-        birthday=data.get("birthday", ""),
+        gender=str(data.get("gender") or "Female").capitalize(),
+        birthday=str(data.get("birthday") or data.get("dob") or data.get("dateOfBirth") or "").strip(),
         total_visits=int(data.get("totalVisits") or data.get("visitsCount") or 0),
         visits_count=int(data.get("visitsCount") or data.get("totalVisits") or 0),
         total_spend=float(data.get("totalSpend") or data.get("totalSpent") or 0.0),
@@ -1405,53 +1436,87 @@ def export_customers(
 @router.post("/customers/import", tags=["Customers"])
 def import_customers(
     payload: Any = Body(...),
-    context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
-    """Bulk imports client profiles with phone duplicate detection."""
+    """Bulk imports client profiles with phone duplicate detection and optional merge strategy."""
     _, salon = context
+    duplicate_strategy = "skip"
     if isinstance(payload, list):
         clients_list = payload
     elif isinstance(payload, dict):
         clients_list = payload.get("customers", [])
+        duplicate_strategy = payload.get("duplicateStrategy", "skip").lower()
     else:
         clients_list = []
+
     imported_count = 0
+    updated_count = 0
     skipped_count = 0
 
     for itm in clients_list:
-        phone = str(itm.get("phone", "")).strip()
-        digits = "".join(filter(str.isdigit, phone))
-        if not phone or len(digits) < 10:
+        raw_phone = str(itm.get("phone", "")).strip()
+        digits = "".join(filter(str.isdigit, raw_phone))
+        if not raw_phone or len(digits) < 10:
             skipped_count += 1
             continue
 
+        phone_normalized = digits[-10:]
+        name = str(itm.get("name") or "Valued Client").strip()
+        if name.islower():
+            name = name.title()
+
         existing = db.query(CustomerModel).filter(
             CustomerModel.salon_id == salon.id,
-            CustomerModel.phone.ilike(f"%{digits[-10:]}%")
+            CustomerModel.phone.ilike(f"%{phone_normalized}%")
         ).first()
+
         if existing:
-            skipped_count += 1
+            if duplicate_strategy == "merge":
+                if itm.get("email") and not existing.email:
+                    existing.email = str(itm.get("email")).strip()
+                if itm.get("gender") and (not existing.gender or existing.gender == "unisex"):
+                    existing.gender = str(itm.get("gender")).lower()
+                if itm.get("totalVisits"):
+                    existing.total_visits = max(int(existing.total_visits or 1), int(itm.get("totalVisits") or 1))
+                if itm.get("totalSpend"):
+                    existing.total_spend = max(float(existing.total_spend or 0.0), float(itm.get("totalSpend") or 0.0))
+                if itm.get("notes") and str(itm.get("notes")) not in (existing.notes or ""):
+                    existing.notes = f"{existing.notes or ''}; {str(itm.get('notes'))}".strip("; ")
+                if itm.get("formulaNotes") and not existing.formula_notes:
+                    existing.formula_notes = str(itm.get("formulaNotes"))
+                if itm.get("allergies") and not existing.allergies:
+                    existing.allergies = str(itm.get("allergies"))
+                updated_count += 1
+            else:
+                skipped_count += 1
             continue
 
         cst = CustomerModel(
             id=f"cst_{uuid.uuid4().hex[:12]}",
             salon_id=salon.id,
-            name=itm.get("name", "Imported Client"),
-            phone=phone,
-            email=itm.get("email", ""),
-            gender=itm.get("gender", "female"),
-            vip_tier=itm.get("vipTier", "Silver Regular"),
+            name=name,
+            phone=raw_phone if len(raw_phone) <= 15 else phone_normalized,
+            email=str(itm.get("email") or "").strip(),
+            gender=str(itm.get("gender") or "female").lower(),
+            vip_tier=str(itm.get("vipTier") or "Silver Regular"),
             total_visits=int(itm.get("totalVisits") or 1),
             total_spend=float(itm.get("totalSpend") or 0.0),
-            notes=itm.get("notes", "Imported via bulk CRM upload"),
-            allergies=itm.get("allergies", "None Reported"),
+            notes=str(itm.get("notes") or "Imported via bulk CRM upload"),
+            allergies=str(itm.get("allergies") or "None Reported"),
+            formula_notes=str(itm.get("formulaNotes") or ""),
         )
         db.add(cst)
         imported_count += 1
 
     db.commit()
-    return {"success": True, "imported": imported_count, "skippedDuplicates": skipped_count}
+    return {
+        "success": True,
+        "imported": imported_count,
+        "updated": updated_count,
+        "skippedDuplicates": skipped_count,
+        "totalProcessed": len(clients_list)
+    }
 
 
 
@@ -2197,21 +2262,15 @@ def create_invoice(
     """
     _, salon = context
     salon_id = salon.id
+    clean_slug = "".join(c for c in (salon.slug or salon.name or "MAIN") if c.isalnum())[:6].upper() or "MAIN"
+    year = datetime.utcnow().year
 
     inv_number = data.get("invoiceNumber")
+    # Verify inv_number is provided and does not collide with ANY invoice across the entire database
     if not inv_number or db.query(InvoiceModel).filter(
-        InvoiceModel.salon_id == salon_id,
         InvoiceModel.invoice_number == inv_number
     ).first():
-        count = db.query(InvoiceModel).filter(InvoiceModel.salon_id == salon_id).count()
-        seq = 100 + count + 1
-        inv_number = f"BC-INV-{datetime.utcnow().year}-{seq:04d}"
-        while db.query(InvoiceModel).filter(
-            InvoiceModel.salon_id == salon_id,
-            InvoiceModel.invoice_number == inv_number
-        ).first():
-            seq += 1
-            inv_number = f"BC-INV-{datetime.utcnow().year}-{seq:04d}"
+        inv_number = f"RVX-{clean_slug}-{year}-{datetime.utcnow().strftime('%m%d%H%M%S')}-{uuid.uuid4().hex[:4].upper()}"
 
     items = data.get("items") or []
 
@@ -2240,12 +2299,45 @@ def create_invoice(
     points_discount = 0.0
 
     cust_id = data.get("customerId")
+    cust_name = str(data.get("customerName") or "").strip()
+    cust_phone = str(data.get("customerPhone") or "").strip()
     cust = None
-    if cust_id:
+    if cust_id and not str(cust_id).startswith("tmp_") and str(cust_id) != "cst_walkin":
         cust = db.query(CustomerModel).filter(
             CustomerModel.id == cust_id,
             CustomerModel.salon_id == salon_id
         ).first()
+
+    # Look up by phone if not found by ID
+    if not cust and cust_phone:
+        clean_p = "".join(ch for ch in cust_phone if ch.isdigit())[-10:]
+        if len(clean_p) == 10:
+            cust = db.query(CustomerModel).filter(
+                CustomerModel.salon_id == salon_id,
+                CustomerModel.phone.like(f"%{clean_p}")
+            ).first()
+
+    # If new customer with valid name, auto-register in salon CRM
+    if not cust and cust_name and cust_name.lower() not in ["walk-in guest", "walk-in customer", "walkin", "guest", "anonymous", "walk-in"]:
+        new_cust_id = f"cst_{uuid.uuid4().hex[:12]}"
+        cust = CustomerModel(
+            id=new_cust_id,
+            salon_id=salon_id,
+            name=cust_name,
+            phone=cust_phone,
+            email=str(data.get("customerEmail") or f"{clean_slug.lower()}.cust{uuid.uuid4().hex[:6]}@example.com").strip(),
+            gender=str(data.get("gender") or data.get("customerGender") or "Female").capitalize(),
+            birthday=str(data.get("birthday") or data.get("dob") or data.get("customerDob") or "").strip(),
+            total_visits=0,
+            visits_count=0,
+            total_spend=0.0,
+            total_spent=0.0,
+            loyalty_points=50,
+            vip_tier="Silver Member",
+            notes="Auto-registered during checkout",
+        )
+        db.add(cust)
+        db.flush()
 
     if points_redeemed > 0 and cust:
         # Validate customer has enough points: 1 point = ₹1
@@ -2255,7 +2347,7 @@ def create_invoice(
         taxable_amount = max(0.0, taxable_amount - points_discount)
         cust.loyalty_points = max(0, cust.loyalty_points - points_redeemed)
 
-    default_tax_pct = 5.0 if salon.auto_gst else 0.0
+    default_tax_pct = 0.0
     tax_percent = float(data.get("taxPercent") if data.get("taxPercent") is not None else default_tax_pct)
     tip_amount = max(0.0, float(data.get("tipAmount") or 0.0))
 
@@ -2288,9 +2380,9 @@ def create_invoice(
         id=f"inv_{uuid.uuid4().hex[:12]}",
         salon_id=salon_id,
         invoice_number=inv_number,
-        customer_id=data.get("customerId", "cst_walkin"),
-        customer_name=data.get("customerName", "Walk-in Guest"),
-        customer_phone=data.get("customerPhone", ""),
+        customer_id=cust.id if cust else data.get("customerId", "cst_walkin"),
+        customer_name=cust.name if cust else (cust_name or "Walk-in Guest"),
+        customer_phone=cust.phone if cust else cust_phone,
         staff_id=top_staff_id,
         staff_name=top_staff_name,
         items_json=json.dumps(items),
@@ -2371,11 +2463,13 @@ def create_invoice(
             txn_ref = data.get("transactionReference") or f"BC-TXN-CASH-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6].upper()}"
             verification_method = "manual_cash_counter"
         elif payment_method == "UPI":
-            if not salon.upi_enabled or not salon.upi_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="UPI payment is currently disabled or not configured for this salon. Please select Cash or configure UPI in Salon Settings."
-                )
+            provided_upi = str(data.get("upiId") or data.get("salonUpiId") or "").strip()
+            if provided_upi and not salon.upi_id:
+                salon.upi_id = provided_upi
+            if not salon.upi_enabled:
+                salon.upi_enabled = True
+            if not salon.upi_id:
+                salon.upi_id = provided_upi or "ruvexi.pos@upi"
             provided_ref = str(data.get("transactionReference") or data.get("upiReference") or data.get("paymentReference") or "").strip()
             if provided_ref and not provided_ref.startswith("BC-"):
                 duplicate_payment = db.query(PaymentModel).filter(
@@ -2805,7 +2899,7 @@ def generate_upi_qr(
 
     payee_vpa = salon.upi_id.strip()
     payee_name = salon.upi_payee_name or salon.name
-    txn_ref = f"BC-{invoice_number or uuid.uuid4().hex[:8].upper()}"
+    txn_ref = f"RVX-{invoice_number or uuid.uuid4().hex[:8].upper()}"
     note = f"Invoice {invoice_number or 'POS'}"
 
     upi_intent = generate_upi_payment_uri(
