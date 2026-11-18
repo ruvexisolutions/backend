@@ -996,6 +996,36 @@ def get_invitation_details(token: str, db: Session = Depends(get_db)):
     }
 
 
+@router.get("/invitations", tags=["Invitations"])
+def list_salon_invitations(
+    context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
+    db: Session = Depends(get_db)
+):
+    """Returns all pending and accepted receptionist invitations for the active salon."""
+    _, salon = context
+    invitations = db.query(InvitationModel).filter(InvitationModel.salon_id == salon.id).order_by(InvitationModel.created_at.desc()).all()
+    return [inv.to_dict() for inv in invitations]
+
+
+@router.delete("/invitations/{invitation_id}", tags=["Invitations"])
+def cancel_invitation(
+    invitation_id: str,
+    context: tuple[UserModel, SalonModel] = Depends(require_salon_manager),
+    db: Session = Depends(get_db)
+):
+    """Revokes a pending receptionist invitation so the owner can invite someone else."""
+    _, salon = context
+    invitation = db.query(InvitationModel).filter(
+        InvitationModel.id == invitation_id,
+        InvitationModel.salon_id == salon.id
+    ).first()
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    db.delete(invitation)
+    db.commit()
+    return {"success": True, "message": "Invitation cancelled successfully"}
+
+
 @router.post("/invitations/accept", tags=["Invitations"])
 def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """Enrolls receptionist into the authorized salon & branch using the single-use token."""
@@ -2041,6 +2071,17 @@ def delete_staff(
         StaffModel.salon_id == salon.id
     ).first()
     if member:
+        # If this staff member was a receptionist with user credentials, revoke login & clean invites
+        if member.email:
+            db.query(UserModel).filter(
+                UserModel.email.ilike(member.email),
+                UserModel.salon_id == salon.id,
+                UserModel.role == "SALON_RECEPTIONIST"
+            ).delete(synchronize_session=False)
+            db.query(InvitationModel).filter(
+                InvitationModel.email.ilike(member.email),
+                InvitationModel.salon_id == salon.id
+            ).delete(synchronize_session=False)
         db.delete(member)
         db.commit()
     return {"success": True, "id": staff_id}
