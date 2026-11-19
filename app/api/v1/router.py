@@ -253,10 +253,20 @@ def is_master_admin_user(user: Optional[UserModel]) -> bool:
     return email_clean in allowed
 
 
-def serialize_user_effective(user: UserModel) -> Dict[str, Any]:
+def serialize_user_effective(user: UserModel, db: Optional[Session] = None) -> Dict[str, Any]:
     d = user.to_dict()
     if is_master_admin_user(user):
         d["role"] = "MASTER_ADMIN"
+    if not d.get("branchId") and db and user.salon_id and user.email:
+        try:
+            stf = db.query(StaffModel).filter(
+                StaffModel.salon_id == user.salon_id,
+                StaffModel.email.ilike(user.email.strip())
+            ).first()
+            if stf and stf.branch_id:
+                d["branchId"] = stf.branch_id
+        except Exception:
+            pass
     return d
 
 
@@ -357,7 +367,7 @@ def get_bootstrap_data(
 
     return {
         "salon": salon.to_dict(),
-        "user": serialize_user_effective(user) if user else None,
+        "user": serialize_user_effective(user, db=db) if user else None,
         "customers": customers,
         "services": services,
         "staff": staff,
@@ -429,7 +439,7 @@ def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     return {
         "success": True,
         "token": token,
-        "user": serialize_user_effective(user),
+        "user": serialize_user_effective(user, db=db),
         "salon": salon.to_dict(),
     }
 
@@ -577,7 +587,7 @@ async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = 
         "success": True,
         "isNewUser": is_new_user,
         "token": token,
-        "user": serialize_user_effective(user),
+        "user": serialize_user_effective(user, db=db),
         "salon": salon.to_dict(),
     }
 
@@ -674,10 +684,11 @@ def get_public_auth_config():
 
 @router.get("/auth/me", tags=["Auth"])
 def get_current_user_me(
-    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon)
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+    db: Session = Depends(get_db)
 ):
     user, salon = context
-    return {"user": serialize_user_effective(user), "salon": salon.to_dict()}
+    return {"user": serialize_user_effective(user, db=db), "salon": salon.to_dict()}
 
 
 @router.post("/auth/forgot-password", tags=["Auth"])
@@ -1344,7 +1355,35 @@ def get_branches(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
-    _, salon = context
+    user, salon = context
+    raw_role = (user.role or "").upper()
+    is_admin = is_master_admin_user(user) or raw_role in ("OWNER", "MANAGER", "ADMIN", "SALON_MANAGER")
+
+    # If the user is a receptionist, lock output strictly to their assigned branch
+    if not is_admin:
+        assigned_branch_id = user.branch_id
+        if not assigned_branch_id:
+            staff_rec = db.query(StaffModel).filter(
+                StaffModel.salon_id == salon.id,
+                StaffModel.email.ilike(user.email)
+            ).first()
+            if staff_rec and staff_rec.branch_id:
+                assigned_branch_id = staff_rec.branch_id
+
+        if assigned_branch_id:
+            branches = db.query(BranchModel).filter(
+                BranchModel.salon_id == salon.id,
+                (BranchModel.id == assigned_branch_id) | (BranchModel.name.ilike(assigned_branch_id))
+            ).all()
+            if branches:
+                return [b.to_dict() for b in branches]
+
+        first_branch = db.query(BranchModel).filter(
+            BranchModel.salon_id == salon.id
+        ).order_by(BranchModel.created_at.asc()).first()
+        if first_branch:
+            return [first_branch.to_dict()]
+
     branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all()
     if not branches:
         default_branch = BranchModel(
@@ -2275,7 +2314,41 @@ def get_appointments(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
-    _, salon = context
+    user, salon = context
+    raw_role = (user.role or "").upper()
+    is_admin = is_master_admin_user(user) or raw_role in ("OWNER", "MANAGER", "ADMIN", "SALON_MANAGER")
+
+    if not is_admin:
+        assigned_branch = user.branch_id
+        if not assigned_branch:
+            staff_rec = db.query(StaffModel).filter(
+                StaffModel.salon_id == salon.id,
+                StaffModel.email.ilike(user.email)
+            ).first()
+            if staff_rec and staff_rec.branch_id:
+                assigned_branch = staff_rec.branch_id
+
+        if assigned_branch:
+            br_obj = db.query(BranchModel).filter(
+                BranchModel.salon_id == salon.id,
+                (BranchModel.id == assigned_branch) | (BranchModel.name.ilike(assigned_branch))
+            ).first()
+            allowed_bids = {assigned_branch}
+            if br_obj:
+                allowed_bids.add(br_obj.id)
+                allowed_bids.add(br_obj.name)
+
+            appointments = (
+                db.query(AppointmentModel)
+                .filter(
+                    AppointmentModel.salon_id == salon.id,
+                    (AppointmentModel.branch_id.in_(allowed_bids) | (AppointmentModel.branch_id == "") | (AppointmentModel.branch_id.is_(None)))
+                )
+                .order_by(AppointmentModel.id.desc())
+                .all()
+            )
+            return [a.to_dict() for a in appointments]
+
     appointments = (
         db.query(AppointmentModel)
         .filter(AppointmentModel.salon_id == salon.id)
@@ -2291,7 +2364,22 @@ def create_appointment(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
-    _, salon = context
+    user, salon = context
+    raw_role = (user.role or "").upper()
+    is_admin = is_master_admin_user(user) or raw_role in ("OWNER", "MANAGER", "ADMIN", "SALON_MANAGER")
+
+    effective_branch_id = data.get("branchId", "Flagship")
+    if not is_admin:
+        assigned_branch = user.branch_id
+        if not assigned_branch:
+            staff_rec = db.query(StaffModel).filter(
+                StaffModel.salon_id == salon.id,
+                StaffModel.email.ilike(user.email)
+            ).first()
+            if staff_rec and staff_rec.branch_id:
+                assigned_branch = staff_rec.branch_id
+        if assigned_branch:
+            effective_branch_id = assigned_branch
     date_val = data.get("date") or datetime.utcnow().strftime("%Y-%m-%d")
     raw_start = data.get("startTime") or data.get("time") or "11:00"
     duration_val = int(data.get("duration") or data.get("durationMinutes") or 45)
@@ -2337,7 +2425,7 @@ def create_appointment(
     apt = AppointmentModel(
         id=f"apt_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
-        branch_id=data.get("branchId", "Flagship"),
+        branch_id=effective_branch_id,
         customer_id=data.get("customerId") or f"cst_walkin_{uuid.uuid4().hex[:6]}",
         customer_name=data.get("customerName", "Walk-in Guest"),
         customer_phone=data.get("customerPhone", ""),
