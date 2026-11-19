@@ -1037,20 +1037,17 @@ def cancel_invitation(
     return {"success": True, "message": "Invitation cancelled successfully"}
 
 
-@router.post("/invitations/accept", tags=["Invitations"])
-def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """Enrolls receptionist into the authorized salon & branch using the single-use token."""
+@router.post("/invitations/request-otp", tags=["Invitations"])
+def request_invitation_otp(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """
+    Sends a 6-digit verification OTP to the invited receptionist's email
+    before allowing account activation.
+    """
     token = (payload.get("token") or "").strip()
-    name = (payload.get("name") or "").strip()
-    password = payload.get("password") or ""
-    phone = (payload.get("phone") or "").strip()
+    name = (payload.get("name") or "Receptionist").strip()
 
     if not token:
         raise HTTPException(status_code=400, detail="Invitation token is required")
-    if not name or len(name) < 2:
-        raise HTTPException(status_code=400, detail="Full name is required")
-    if not password or len(password) < 6:
-        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
     invitation = db.query(InvitationModel).filter(
         InvitationModel.token == token,
@@ -1060,6 +1057,100 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
 
     if not invitation:
         raise HTTPException(status_code=400, detail="Invitation link is invalid or has expired")
+
+    clean_email = invitation.email.strip().lower()
+
+    # Rate limiting: max 5 requests per 10 minutes
+    ten_min_ago = datetime.utcnow() - timedelta(minutes=10)
+    recent_count = db.query(OTPModel).filter(
+        OTPModel.email == clean_email,
+        OTPModel.created_at >= ten_min_ago
+    ).count()
+    if recent_count >= 5:
+        raise HTTPException(status_code=429, detail="Too many OTP requests. Please wait 10 minutes.")
+
+    # Resend cooldown: at least 30 seconds
+    latest_otp = db.query(OTPModel).filter(OTPModel.email == clean_email).order_by(OTPModel.created_at.desc()).first()
+    if latest_otp and (datetime.utcnow() - latest_otp.created_at).total_seconds() < 30:
+        raise HTTPException(status_code=429, detail="Please wait 30 seconds before requesting a new code.")
+
+    # Generate 6-digit code
+    otp_code = f"{secrets.randbelow(900000) + 100000}"
+    otp_record = OTPModel(
+        phone=clean_email[:32],
+        email=clean_email,
+        otp_hash=hash_password(otp_code),
+        expires_at=datetime.utcnow() + timedelta(minutes=10),
+        attempts=0,
+        is_used=False
+    )
+    db.add(otp_record)
+    db.commit()
+
+    send_otp_email(clean_email, name, otp_code)
+
+    response_payload = {
+        "success": True,
+        "message": f"6-digit verification code sent to {clean_email}. Valid for 10 minutes.",
+    }
+    if not (os.getenv("RESEND_API_KEY") or "").strip() or os.getenv("ALLOW_DEV_OTP", "").lower() == "true":
+        response_payload["dev_otp"] = otp_code
+
+    return response_payload
+
+
+@router.post("/invitations/accept", tags=["Invitations"])
+def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
+    """Enrolls receptionist into the authorized salon & branch using the single-use token."""
+    token = (payload.get("token") or "").strip()
+    name = (payload.get("name") or "").strip()
+    password = payload.get("password") or ""
+    phone = (payload.get("phone") or "").strip()
+    otp_code = (payload.get("otp") or "").strip()
+
+    if not token:
+        raise HTTPException(status_code=400, detail="Invitation token is required")
+    if not name or len(name) < 2:
+        raise HTTPException(status_code=400, detail="Full name is required")
+    if not password or len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    if not otp_code:
+        raise HTTPException(status_code=400, detail="6-digit verification code is required")
+
+    invitation = db.query(InvitationModel).filter(
+        InvitationModel.token == token,
+        InvitationModel.is_accepted == False,
+        InvitationModel.expires_at >= datetime.utcnow()
+    ).first()
+
+    if not invitation:
+        raise HTTPException(status_code=400, detail="Invitation link is invalid or has expired")
+
+    clean_email = invitation.email.strip().lower()
+
+    # Verify OTP
+    otp_record = db.query(OTPModel).filter(
+        OTPModel.email == clean_email,
+        OTPModel.is_used == False,
+        OTPModel.expires_at >= datetime.utcnow()
+    ).order_by(OTPModel.created_at.desc()).first()
+
+    if not otp_record:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code. Please request a new code.")
+
+    if otp_record.attempts >= 5:
+        otp_record.is_used = True
+        db.commit()
+        raise HTTPException(status_code=400, detail="Maximum verification attempts exceeded. Please request a new code.")
+
+    otp_record.attempts += 1
+    if not verify_password(otp_code, otp_record.otp_hash):
+        db.commit()
+        remaining = 5 - otp_record.attempts
+        raise HTTPException(status_code=400, detail=f"Incorrect verification code. {remaining} attempt(s) remaining.")
+
+    otp_record.is_used = True
+    db.commit()
 
     salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
     if not salon:
