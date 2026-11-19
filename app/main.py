@@ -289,11 +289,11 @@ allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
 if not allowed_origins:
     allowed_origins = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "https://ruvexi.netlify.app",
         "https://ruvexisolutions.com",
         "https://www.ruvexisolutions.com",
+        "https://ruvexi.netlify.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "https://website-production-ruvexi.up.railway.app",
         "https://ruvexi.up.railway.app",
     ]

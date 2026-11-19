@@ -10,7 +10,7 @@ def _get_frontend_url() -> str:
     return (
         os.getenv("FRONTEND_URL")
         or os.getenv("NEXT_PUBLIC_APP_URL")
-        or "https://ruvexi.netlify.app"
+        or "https://ruvexisolutions.com"
     ).rstrip("/")
 
 
