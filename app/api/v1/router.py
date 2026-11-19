@@ -195,8 +195,8 @@ def get_current_user_and_salon(
     user_email = (user.email or "").strip().lower()
     salon_email = (salon.email or "").strip().lower()
 
-    # Automatically grant active Pro subscription & Master Admin to darshanurs54@gmail.com and platform admins
-    if is_master_admin_user(user) or user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com") or salon_email in ("darshanurs54@gmail.com",) or "olg" in (salon.name or "").lower():
+    # Automatically grant active Pro subscription & Master Admin to darshanurs54@gmail.com, outlookgood9@gmail.com, and platform admins
+    if is_master_admin_user(user) or user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or salon_email in ("darshanurs54@gmail.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -244,7 +244,7 @@ def is_master_admin_user(user: Optional[UserModel]) -> bool:
     if not user:
         return False
     email_clean = (user.email or "").strip().lower()
-    if email_clean in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com"):
+    if email_clean in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com"):
         return True
     if (user.role or "").strip().upper() == "MASTER_ADMIN":
         return True
@@ -294,7 +294,7 @@ def get_bootstrap_data(
     # Automatically ensure active Pro subscription for darshanurs54@gmail.com
     user_email = (user.email or "").strip().lower() if user else ""
     salon_email = (salon.email or "").strip().lower() if salon else ""
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com") or salon_email in ("darshanurs54@gmail.com",):
+    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or salon_email in ("darshanurs54@gmail.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -397,7 +397,7 @@ def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Salon workspace not found")
 
     user_email = (user.email or "").strip().lower()
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com"):
+    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -548,7 +548,7 @@ async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = 
             db.commit()
             db.refresh(user)
 
-    if email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com"):
+    if email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
         salon.subscription_status = "active"
         salon.subscription_plan = "pro"
         salon.trial_ends_at = None
@@ -856,7 +856,7 @@ def verify_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depend
         raise HTTPException(status_code=404, detail="Salon workspace not found")
 
     user_email = (user.email or "").strip().lower()
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com"):
+    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -1135,7 +1135,7 @@ def get_subscription_status(
     # Automatically ensure active Pro subscription for darshanurs54@gmail.com
     user_email = (user.email or "").strip().lower() if user else ""
     salon_email = (salon.email or "").strip().lower() if salon else ""
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com") or salon_email in ("darshanurs54@gmail.com",):
+    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or salon_email in ("darshanurs54@gmail.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -1832,6 +1832,40 @@ def purge_decommissioned_endpoint(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/public/salons/sync-outlookgood", tags=["PublicBooking"])
+def sync_outlookgood_endpoint(db: Session = Depends(get_db)):
+    """Seeds, migrates and configures outlookgood9@gmail.com as MASTER_ADMIN owning OLG Unisex Salon & HairFixing with 3 branches and 125 services."""
+    try:
+        from app.core.seed import seed_database
+        seed_database(db)
+        from app.core.models import SalonModel, BranchModel, ServiceModel, UserModel
+        salon = db.query(SalonModel).filter(
+            (SalonModel.email.ilike("outlookgood9@gmail.com")) |
+            (SalonModel.id == "sln_3857fe44e88a")
+        ).first()
+        branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all() if salon else []
+        services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all() if salon else []
+        user = db.query(UserModel).filter(UserModel.email.ilike("outlookgood9@gmail.com")).first()
+        if user:
+            user.name = "Outlook Good"
+            user.role = "MASTER_ADMIN"
+            user.password_hash = hash_password("Ruvexi2026!")
+            db.commit()
+        return {
+            "status": "ok",
+            "salon": salon.name if salon else None,
+            "salonId": salon.id if salon else None,
+            "user": user.email if user else None,
+            "userName": user.name if user else None,
+            "role": user.role if user else None,
+            "branches": [b.name for b in branches],
+            "servicesCount": len(services),
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/public/salons/sync-chethan", tags=["PublicBooking"])
 def sync_chethan_endpoint(db: Session = Depends(get_db)):
     """Seeds and updates Chethan Shyva's salon to OLG Unisex Salon & HairFixing with 3 branches and 125 services."""
@@ -1839,7 +1873,11 @@ def sync_chethan_endpoint(db: Session = Depends(get_db)):
         from app.core.seed import seed_database
         seed_database(db)
         from app.core.models import SalonModel, BranchModel, ServiceModel, UserModel
-        salon = db.query(SalonModel).filter(SalonModel.email.ilike("chethanchethu524@gmail.com")).first()
+        salon = db.query(SalonModel).filter(
+            (SalonModel.email.ilike("chethanchethu524@gmail.com")) |
+            (SalonModel.email.ilike("outlookgood9@gmail.com")) |
+            (SalonModel.id == "sln_3857fe44e88a")
+        ).first()
         branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all() if salon else []
         services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all() if salon else []
         user = db.query(UserModel).filter(UserModel.email.ilike("chethanchethu524@gmail.com")).first()

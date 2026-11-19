@@ -416,6 +416,33 @@ def seed_database(db: Session):
             db.add(chethan_user)
             db.commit()
 
+        # Ensure user outlookgood9@gmail.com exists with MASTER_ADMIN role owning OLG Unisex Salon & HairFixing
+        chethan_salon.email = "outlookgood9@gmail.com"
+        outlook_user = db.query(UserModel).filter(
+            UserModel.email.ilike("outlookgood9@gmail.com")
+        ).first()
+        if outlook_user:
+            outlook_user.salon_id = chethan_salon.id
+            outlook_user.name = "Outlook Good"
+            outlook_user.role = "MASTER_ADMIN"
+            outlook_user.phone = "8296294666"
+            outlook_user.password_hash = hash_password("Ruvexi2026!")
+            db.commit()
+        else:
+            import uuid
+            outlook_user = UserModel(
+                id=f"usr_{uuid.uuid4().hex[:12]}",
+                salon_id=chethan_salon.id,
+                name="Outlook Good",
+                email="outlookgood9@gmail.com",
+                phone="8296294666",
+                role="MASTER_ADMIN",
+                avatar="O",
+                password_hash=hash_password("Ruvexi2026!"),
+            )
+            db.add(outlook_user)
+            db.commit()
+
         # Ensure 3 branches under this salon: chikmagalur, hassan, belur
         branches_data = [
             {
@@ -425,7 +452,7 @@ def seed_database(db: Session):
                 "city": "Chikmagalur",
                 "address": "opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
                 "phone": "8296294666",
-                "email": "chethanchethu524@gmail.com",
+                "email": "outlookgood9@gmail.com",
                 "chairs": 6,
             },
             {
@@ -435,7 +462,7 @@ def seed_database(db: Session):
                 "city": "Hassan",
                 "address": "Main Road, Near City Bus Stand, Hassan",
                 "phone": "8296294666",
-                "email": "chethanchethu524@gmail.com",
+                "email": "outlookgood9@gmail.com",
                 "chairs": 6,
             },
             {
@@ -445,7 +472,7 @@ def seed_database(db: Session):
                 "city": "Belur",
                 "address": "Temple Road, Belur",
                 "phone": "8296294666",
-                "email": "chethanchethu524@gmail.com",
+                "email": "outlookgood9@gmail.com",
                 "chairs": 5,
             },
         ]
