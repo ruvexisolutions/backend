@@ -184,15 +184,20 @@ class UserModel(Base):
         elif normalized_role in ("receptionist", "SALON_RECEPTIONIST"):
             normalized_role = "SALON_RECEPTIONIST"
 
+        raw_name = (self.name or "").strip()
+        display_name = raw_name
+        if raw_name and (raw_name.islower() or raw_name.isupper()):
+            display_name = " ".join([w.capitalize() for w in raw_name.split()])
+
         return {
             "id": self.id,
             "salonId": self.salon_id,
             "branchId": self.branch_id,
-            "name": self.name,
+            "name": display_name or self.name,
             "email": self.email,
             "phone": self.phone,
             "role": normalized_role,
-            "avatar": self.avatar,
+            "avatar": self.avatar or (display_name[0].upper() if display_name else "R"),
             "createdAt": self.created_at.isoformat() if self.created_at else None,
         }
 

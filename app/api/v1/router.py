@@ -1843,6 +1843,9 @@ def sync_chethan_endpoint(db: Session = Depends(get_db)):
         branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all() if salon else []
         services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all() if salon else []
         user = db.query(UserModel).filter(UserModel.email.ilike("chethanchethu524@gmail.com")).first()
+        if user:
+            user.name = "Chethan Shyva"
+            db.commit()
         return {
             "status": "ok",
             "salon": salon.name if salon else None,

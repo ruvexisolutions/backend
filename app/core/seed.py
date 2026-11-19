@@ -396,6 +396,7 @@ def seed_database(db: Session):
         ).first()
         if chethan_user:
             chethan_user.salon_id = chethan_salon.id
+            chethan_user.name = "Chethan Shyva"
             chethan_user.role = "MASTER_ADMIN"
             chethan_user.phone = "8296294666"
             chethan_user.password_hash = hash_password("Ruvexi2026!")
