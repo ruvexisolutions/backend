@@ -231,6 +231,22 @@ def ensure_schema_compatibility():
                     else:
                         conn.execute(text("ALTER TABLE feedbacks ADD COLUMN customer_phone VARCHAR(32) DEFAULT ''"))
 
+        # OTPs table email column & phone width upgrade
+        if "otps" in tables:
+            try:
+                otp_cols = [c["name"] for c in inspector.get_columns("otps")]
+                with engine.begin() as conn:
+                    if "email" not in otp_cols:
+                        if is_postgres:
+                            conn.execute(text("ALTER TABLE otps ADD COLUMN IF NOT EXISTS email VARCHAR(128)"))
+                        else:
+                            conn.execute(text("ALTER TABLE otps ADD COLUMN email VARCHAR(128)"))
+                    if is_postgres:
+                        conn.execute(text("ALTER TABLE otps ALTER COLUMN phone DROP NOT NULL"))
+                        conn.execute(text("ALTER TABLE otps ALTER COLUMN phone TYPE VARCHAR(128)"))
+            except Exception as e_otps:
+                print(f"[OTPs Schema Migration Notice] {e_otps}")
+
         # Salons logo/logo_url column type upgrade to TEXT for Postgres
         if is_postgres and "salons" in tables:
             try:

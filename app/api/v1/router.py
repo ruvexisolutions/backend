@@ -733,56 +733,61 @@ def reset_password(payload: Dict[str, Any] = Body(...), db: Session = Depends(ge
 
 
 # ============================================================================
-# Manager Authentication via Phone OTP
+# User Authentication via Email / Phone OTP
 # ============================================================================
 @router.post("/auth/otp/request", tags=["Auth"])
 def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """
-    Dispatches a cryptographically generated 6-digit OTP to a registered Salon Manager.
+    Dispatches a cryptographically generated 6-digit OTP to a registered user via Email (or Phone).
     Includes rate-limiting (max 5 in 10 mins), resend cooldown (30s), and attempt tracking.
     """
+    raw_email = (payload.get("email") or payload.get("identifier") or "").strip().lower()
     raw_phone = (payload.get("phone") or "").strip()
-    clean_phone = "".join(c for c in raw_phone if c.isdigit() or c == "+")
 
-    if not clean_phone or len(clean_phone) < 10:
-        raise HTTPException(status_code=400, detail="A valid registered phone number is required")
+    is_email = bool("@" in raw_email or "@" in raw_phone)
+    if is_email:
+        clean_target = raw_email if "@" in raw_email else raw_phone.strip().lower()
+        if not clean_target or "@" not in clean_target:
+            raise HTTPException(status_code=400, detail="A valid registered email address is required")
+        user = db.query(UserModel).filter(UserModel.email.ilike(clean_target)).first()
+    else:
+        clean_target = "".join(c for c in raw_phone if c.isdigit() or c == "+")
+        if not clean_target or len(clean_target) < 10:
+            raise HTTPException(status_code=400, detail="A valid registered email or phone number is required")
+        user = None
+        for u in db.query(UserModel).all():
+            u_phone = "".join(c for c in (u.phone or "") if c.isdigit() or c == "+")
+            if u_phone and (clean_target.endswith(u_phone[-10:]) or u_phone.endswith(clean_target[-10:])):
+                user = u
+                break
 
     # Rate limiting: max 5 requests per 10 minutes
     ten_min_ago = datetime.utcnow() - timedelta(minutes=10)
+    filter_cond = (OTPModel.email == clean_target) if is_email else (OTPModel.phone == clean_target)
     recent_count = db.query(OTPModel).filter(
-        OTPModel.phone == clean_phone,
+        filter_cond,
         OTPModel.created_at >= ten_min_ago
     ).count()
     if recent_count >= 5:
         raise HTTPException(status_code=429, detail="Too many OTP requests. Please wait 10 minutes.")
 
     # Resend cooldown: at least 30 seconds
-    latest_otp = db.query(OTPModel).filter(
-        OTPModel.phone == clean_phone
-    ).order_by(OTPModel.created_at.desc()).first()
+    latest_otp = db.query(OTPModel).filter(filter_cond).order_by(OTPModel.created_at.desc()).first()
     if latest_otp and (datetime.utcnow() - latest_otp.created_at).total_seconds() < 30:
         raise HTTPException(status_code=429, detail="Please wait 30 seconds before requesting a new code.")
 
-    # Locate manager user matching this phone
-    user = None
-    for u in db.query(UserModel).all():
-        u_phone = "".join(c for c in (u.phone or "") if c.isdigit() or c == "+")
-        if u_phone and (clean_phone.endswith(u_phone[-10:]) or u_phone.endswith(clean_phone[-10:])):
-            if u.role in ("SALON_MANAGER", "owner", "manager"):
-                user = u
-                break
-
-    # Security: neutral response if phone is not a manager
+    # Security: neutral response if account not found
     if not user:
         return {
             "success": True,
-            "message": "If this phone number is associated with an active Salon Manager, an OTP code has been dispatched."
+            "message": f"If this {'email' if is_email else 'phone number'} is associated with an active account, an OTP code has been dispatched."
         }
 
     # Generate cryptographically secure 6-digit code
     otp_code = f"{secrets.randbelow(900000) + 100000}"
     otp_record = OTPModel(
-        phone=clean_phone,
+        phone=user.phone or clean_target[:32],
+        email=user.email or (clean_target if is_email else None),
         otp_hash=hash_password(otp_code),
         expires_at=datetime.utcnow() + timedelta(minutes=5),
         attempts=0,
@@ -796,7 +801,7 @@ def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depen
 
     response_payload = {
         "success": True,
-        "message": f"6-digit OTP code sent to your registered number. Valid for 5 minutes.",
+        "message": f"6-digit verification code sent to {user.email or clean_target}. Valid for 5 minutes.",
     }
     # Security: dev_otp only exposed if explicitly activated via ALLOW_DEV_OTP for test runners
     if os.getenv("ALLOW_DEV_OTP", "").lower() == "true":
@@ -808,17 +813,27 @@ def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depen
 @router.post("/auth/otp/verify", tags=["Auth"])
 def verify_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """
-    Verifies manager 6-digit OTP, prevents brute force (max 5 tries), and issues JWT.
+    Verifies 6-digit OTP, prevents brute force (max 5 tries), and issues session token.
     """
+    raw_email = (payload.get("email") or payload.get("identifier") or "").strip().lower()
     raw_phone = (payload.get("phone") or "").strip()
     otp_code = (payload.get("otp") or "").strip()
-    clean_phone = "".join(c for c in raw_phone if c.isdigit() or c == "+")
 
-    if not clean_phone or not otp_code:
-        raise HTTPException(status_code=400, detail="Phone number and 6-digit OTP are required")
+    is_email = bool("@" in raw_email or "@" in raw_phone)
+    if is_email:
+        clean_target = raw_email if "@" in raw_email else raw_phone.strip().lower()
+    else:
+        clean_target = "".join(c for c in raw_phone if c.isdigit() or c == "+")
+
+    if not clean_target or not otp_code:
+        raise HTTPException(status_code=400, detail="Email address and 6-digit OTP are required")
+
+    filter_cond = (
+        (OTPModel.email == clean_target) | (OTPModel.phone == clean_target[:32])
+    ) if is_email else (OTPModel.phone == clean_target)
 
     otp_record = db.query(OTPModel).filter(
-        OTPModel.phone == clean_phone,
+        filter_cond,
         OTPModel.is_used == False,
         OTPModel.expires_at >= datetime.utcnow()
     ).order_by(OTPModel.created_at.desc()).first()
@@ -841,36 +856,42 @@ def verify_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depend
     otp_record.is_used = True
     db.commit()
 
-    # Find the manager account
-    user = None
-    for u in db.query(UserModel).all():
-        u_phone = "".join(c for c in (u.phone or "") if c.isdigit() or c == "+")
-        if u_phone and (clean_phone.endswith(u_phone[-10:]) or u_phone.endswith(clean_phone[-10:])):
-            if u.role in ("SALON_MANAGER", "owner", "manager"):
+    if is_email:
+        user = db.query(UserModel).filter(UserModel.email.ilike(clean_target)).first()
+    else:
+        user = None
+        for u in db.query(UserModel).all():
+            u_phone = "".join(c for c in (u.phone or "") if c.isdigit() or c == "+")
+            if u_phone and (clean_target.endswith(u_phone[-10:]) or u_phone.endswith(clean_target[-10:])):
                 user = u
                 break
 
     if not user:
-        raise HTTPException(status_code=404, detail="Salon Manager account not found for this phone number")
+        raise HTTPException(status_code=404, detail="Account not found for this email address")
 
     salon = db.query(SalonModel).filter(SalonModel.id == user.salon_id).first()
     if not salon:
         raise HTTPException(status_code=404, detail="Salon workspace not found")
 
-    user_email = (user.email or "").strip().lower()
+    raw_role = (user.role or "").upper()
+    normalized_role = (
+        "MASTER_ADMIN" if is_master_admin_user(user)
+        else ("SALON_MANAGER" if raw_role in ("OWNER", "MANAGER", "ADMIN", "SALON_MANAGER") else "SALON_RECEPTIONIST")
+    )
 
     token = create_access_token({
         "sub": user.id,
         "email": user.email,
         "name": user.name,
-        "role": "SALON_MANAGER",
+        "role": normalized_role,
         "salon_id": user.salon_id,
+        "branch_id": getattr(user, "branch_id", None),
     })
 
     return {
         "success": True,
         "token": token,
-        "user": user.to_dict(),
+        "user": serialize_user_effective(user, db),
         "salon": salon.to_dict(),
     }
 

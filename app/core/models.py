@@ -231,7 +231,8 @@ class OTPModel(Base):
     __tablename__ = "otps"
 
     id = Column(String(64), primary_key=True, default=lambda: f"otp_{uuid.uuid4().hex[:12]}")
-    phone = Column(String(32), nullable=False, index=True)
+    phone = Column(String(128), nullable=True, index=True)
+    email = Column(String(128), nullable=True, index=True)
     otp_hash = Column(String(256), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     attempts = Column(Integer, default=0)
