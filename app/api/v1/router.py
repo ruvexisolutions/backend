@@ -171,12 +171,59 @@ def get_auth_context(
 
     if token:
         payload = decode_access_token(token)
-        if payload and "sub" in payload:
-            user = db.query(UserModel).filter(UserModel.id == payload["sub"]).first()
+        if payload:
+            sub = payload.get("sub")
+            email = payload.get("email")
+            user = None
+            if sub:
+                user = db.query(UserModel).filter(UserModel.id == sub).first()
+            if not user and email:
+                user = db.query(UserModel).filter(UserModel.email.ilike(email.strip())).first()
+
             if user:
                 salon = db.query(SalonModel).filter(SalonModel.id == user.salon_id).first()
                 if salon:
                     return user, salon
+
+            # If user authenticated with Supabase but not yet present in PostgreSQL, auto-provision
+            if not user and email:
+                try:
+                    user_meta = payload.get("user_metadata") or {}
+                    name = user_meta.get("name") or user_meta.get("full_name") or email.split("@")[0]
+                    salon_name = user_meta.get("salon_name") or f"{name}'s Atelier"
+                    salon_id = user_meta.get("salon_id") or f"sln_{uuid.uuid4().hex[:12]}"
+
+                    salon = db.query(SalonModel).filter(SalonModel.id == salon_id).first()
+                    if not salon:
+                        clean_slug = re.sub(r'[^a-z0-9]+', '-', salon_name.lower()).strip('-')
+                        salon = SalonModel(
+                            id=salon_id,
+                            name=salon_name,
+                            slug=clean_slug or "ruvexi-studio",
+                            city=user_meta.get("city") or "Bengaluru",
+                            chairs=int(user_meta.get("chairs") or 6),
+                            subscription_status="active" if is_master_admin_user_email(email) else "trial",
+                            subscription_plan="pro" if is_master_admin_user_email(email) else "free_trial",
+                        )
+                        db.add(salon)
+                        db.commit()
+                        db.refresh(salon)
+
+                    new_usr = UserModel(
+                        id=sub or f"usr_{uuid.uuid4().hex[:12]}",
+                        salon_id=salon.id,
+                        branch_id=user_meta.get("branch_id"),
+                        name=name,
+                        email=email.strip().lower(),
+                        role="MASTER_ADMIN" if is_master_admin_user_email(email) else (user_meta.get("role") or "SALON_MANAGER"),
+                        avatar=name[0].upper() if name else "R",
+                    )
+                    db.add(new_usr)
+                    db.commit()
+                    db.refresh(new_usr)
+                    return new_usr, salon
+                except Exception:
+                    db.rollback()
 
     return None, None
 
@@ -672,11 +719,21 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
 
 @router.get("/auth/public-config", tags=["Auth"])
 def get_public_auth_config():
-    """Returns non-secret public OAuth client configuration sourced strictly from Railway environment."""
+    """Returns non-secret public OAuth and Supabase client configuration sourced strictly from Railway environment."""
     return {
         "googleClientId": (
             os.getenv("GOOGLE_CLIENT_ID")
             or os.getenv("NEXT_PUBLIC_GOOGLE_CLIENT_ID")
+            or ""
+        ).strip(),
+        "supabaseUrl": (
+            os.getenv("SUPABASE_URL")
+            or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+            or "https://jpkxwdwjrgerdqxjxesw.supabase.co"
+        ).strip(),
+        "supabaseAnonKey": (
+            os.getenv("SUPABASE_ANON_KEY")
+            or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
             or ""
         ).strip(),
     }

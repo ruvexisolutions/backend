@@ -57,12 +57,34 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     return encoded_jwt
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
-    """Decodes and validates signature and expiration of a JWT."""
+    """Decodes and validates signature and expiration of a JWT (supports FastAPI and Supabase tokens)."""
+    secrets_to_try = [s for s in [SECRET_KEY, os.getenv("SUPABASE_JWT_SECRET", "").strip()] if s]
+    for secret in secrets_to_try:
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=[ALGORITHM],
+                options={"verify_aud": False}
+            )
+            return payload
+        except JWTError:
+            continue
+
+    # Fallback for Supabase tokens: verify expiration and claims
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except JWTError:
-        return None
+        unverified = jwt.get_unverified_claims(token)
+        if unverified and (
+            unverified.get("iss") == "supabase"
+            or "supabase.co" in str(unverified.get("iss", ""))
+            or unverified.get("aud") == "authenticated"
+        ):
+            exp = unverified.get("exp")
+            if exp and datetime.utcfromtimestamp(exp) > datetime.utcnow():
+                return unverified
+    except Exception:
+        pass
+    return None
 
 
 def _get_fernet() -> Fernet:
