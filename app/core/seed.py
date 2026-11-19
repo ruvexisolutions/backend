@@ -221,363 +221,16 @@ def seed_database(db: Session):
     except Exception:
         pass
 
-    # Seed services for OLG Hair Saloon (darshanurs54@gmail.com)
-    try:
-        from .olg_catalog import OLG_CATALOG
-        olg_salon = db.query(SalonModel).filter(
-            (SalonModel.email.ilike("darshanurs54@gmail.com")) |
-            (SalonModel.id == "sln_1dc700ec03ea") |
-            (SalonModel.name.ilike("%olg%"))
-        ).first()
-
-        if not olg_salon:
-            now_dt = datetime.utcnow()
-            olg_salon = SalonModel(
-                id="sln_1dc700ec03ea",
-                name="OLG Professional Unisex Salon & HairFixing",
-                slug="darshan-urs-s-atelier-7b0e",
-                branch="Chickmagalur Studio",
-                city="Chickmagalur",
-                currency="₹",
-                chairs=5,
-                category="Hair Studio & Aesthetic Spa",
-                phone="8296294666",
-                email="darshanurs54@gmail.com",
-                address="opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
-                timing="10:00 AM - 09:00 PM (All Days)",
-                rating=4.9,
-                review_count=418,
-                trial_started_at=now_dt,
-                trial_ends_at=None,
-                subscription_status="active",
-                subscription_plan="pro",
-                upi_id="8296294666@ybl",
-                upi_payee_name="OLG Professional Unisex Salon",
-                cash_enabled=True,
-                upi_enabled=True,
-            )
-            db.add(olg_salon)
-            db.commit()
-        else:
-            olg_salon.subscription_status = "active"
-            olg_salon.subscription_plan = "pro"
-            olg_salon.trial_ends_at = None
-            db.commit()
-
-        # Ensure all salons tied to darshanurs54@gmail.com have active Pro subscription access
-        darshan_salons = db.query(SalonModel).filter(
-            (SalonModel.email.ilike("darshanurs54@gmail.com")) |
-            (SalonModel.id == "sln_1dc700ec03ea") |
-            (SalonModel.name.ilike("%olg%"))
-        ).all()
-        for s in darshan_salons:
-            s.subscription_status = "active"
-            s.subscription_plan = "pro"
-            s.trial_ends_at = None
-        db.commit()
-
-        # Ensure darshanurs54@gmail.com user exists and has valid password
-        darshan_user = db.query(UserModel).filter(
-            (UserModel.email.ilike("darshanurs54@gmail.com")) |
-            (UserModel.salon_id == olg_salon.id)
-        ).first()
-        if darshan_user:
-            darshan_user.salon_id = olg_salon.id
-            if not darshan_user.phone:
-                darshan_user.phone = "8296294666"
-            darshan_user.role = "MASTER_ADMIN"
-            if not darshan_user.password_hash or len(darshan_user.password_hash) < 10:
-                darshan_user.password_hash = hash_password("Ruvexi2026!")
-            db.commit()
-        else:
-            import uuid
-            darshan_user = UserModel(
-                id=f"usr_{uuid.uuid4().hex[:12]}",
-                salon_id=olg_salon.id,
-                name="Darshan Urs",
-                email="darshanurs54@gmail.com",
-                phone="8296294666",
-                role="MASTER_ADMIN",
-                avatar="D",
-                password_hash=hash_password("Ruvexi2026!"),
-            )
-            db.add(darshan_user)
-            db.commit()
-
-        # Seed all 125 services idempotently
-        existing_srvs = {
-            (s.name.strip().lower(), s.category.strip().lower()): s
-            for s in db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
-        }
-        for item in OLG_CATALOG:
-            key = (item["name"].strip().lower(), item["category"].strip().lower())
-            if key in existing_srvs:
-                s = existing_srvs[key]
-                s.price = item["price"]
-                s.duration_minutes = item["duration_minutes"]
-                s.buffer_minutes = item.get("buffer_minutes", 5)
-                s.description = item.get("description", "")
-                s.is_active = True
-                s.is_online_bookable = True
-                s.popular = item.get("popular", False)
-            else:
-                s = ServiceModel(
-                    id=item["id"],
-                    salon_id=olg_salon.id,
-                    name=item["name"],
-                    category=item["category"],
-                    price=item["price"],
-                    duration_minutes=item["duration_minutes"],
-                    buffer_minutes=item.get("buffer_minutes", 5),
-                    description=item.get("description", ""),
-                    is_active=True,
-                    is_online_bookable=True,
-                    popular=item.get("popular", False),
-                )
-                db.add(s)
-        db.commit()
-        print(f"[Seed] Successfully ensured {len(OLG_CATALOG)} services for OLG salon ({olg_salon.name})")
-    except Exception as e_olg:
-        db.rollback()
-        print(f"[Seed Notice] OLG services seed notice: {e_olg}")
-
-    # Configure chethanchethu524@gmail.com as MASTER_ADMIN owning "OLG Unisex Salon & HairFixing" with 3 branches & 125 services
-    try:
-        from .olg_catalog import OLG_CATALOG
-        chethan_salon = db.query(SalonModel).filter(
-            (SalonModel.email.ilike("chethanchethu524@gmail.com")) |
-            (SalonModel.id == "sln_3857fe44e88a")
-        ).first()
-
-        now_dt = datetime.utcnow()
-        if not chethan_salon:
-            chethan_salon = SalonModel(
-                id="sln_3857fe44e88a",
-                name="OLG Unisex Salon & HairFixing",
-                slug="chethan-shyva-s-atelier-604a",
-                branch="Chikmagalur",
-                city="Chikmagalur",
-                currency="₹",
-                chairs=6,
-                category="Hair Studio & Aesthetic Spa",
-                phone="8296294666",
-                email="chethanchethu524@gmail.com",
-                address="opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
-                timing="10:00 AM - 09:00 PM (All Days)",
-                rating=4.9,
-                review_count=418,
-                trial_started_at=now_dt,
-                trial_ends_at=None,
-                subscription_status="active",
-                subscription_plan="pro",
-                upi_id="8296294666@ybl",
-                upi_payee_name="OLG Unisex Salon & HairFixing",
-                cash_enabled=True,
-                upi_enabled=True,
-            )
-            db.add(chethan_salon)
-            db.commit()
-        else:
-            chethan_salon.name = "OLG Unisex Salon & HairFixing"
-            chethan_salon.city = "Chikmagalur"
-            chethan_salon.branch = "Chikmagalur"
-            chethan_salon.subscription_status = "active"
-            chethan_salon.subscription_plan = "pro"
-            chethan_salon.trial_ends_at = None
-            chethan_salon.upi_id = "8296294666@ybl"
-            chethan_salon.upi_payee_name = "OLG Unisex Salon & HairFixing"
-            chethan_salon.cash_enabled = True
-            chethan_salon.upi_enabled = True
-            db.commit()
-
-        # Ensure user chethanchethu524@gmail.com has MASTER_ADMIN role
-        chethan_user = db.query(UserModel).filter(
-            UserModel.email.ilike("chethanchethu524@gmail.com")
-        ).first()
-        if chethan_user:
-            chethan_user.salon_id = chethan_salon.id
-            chethan_user.name = "Chethan Shyva"
-            chethan_user.role = "MASTER_ADMIN"
-            chethan_user.phone = "8296294666"
-            chethan_user.password_hash = hash_password("Ruvexi2026!")
-            db.commit()
-        else:
-            import uuid
-            chethan_user = UserModel(
-                id=f"usr_{uuid.uuid4().hex[:12]}",
-                salon_id=chethan_salon.id,
-                name="Chethan Shyva",
-                email="chethanchethu524@gmail.com",
-                phone="8296294666",
-                role="MASTER_ADMIN",
-                avatar="C",
-                password_hash=hash_password("Ruvexi2026!"),
-            )
-            db.add(chethan_user)
-            db.commit()
-
-        # Ensure user outlookgood9@gmail.com exists with MASTER_ADMIN role owning OLG Unisex Salon & HairFixing
-        chethan_salon.email = "outlookgood9@gmail.com"
-        outlook_user = db.query(UserModel).filter(
-            UserModel.email.ilike("outlookgood9@gmail.com")
-        ).first()
-        if outlook_user:
-            outlook_user.salon_id = chethan_salon.id
-            outlook_user.name = "Outlook Good"
-            outlook_user.role = "MASTER_ADMIN"
-            outlook_user.phone = "8296294666"
-            outlook_user.password_hash = hash_password("Ruvexi2026!")
-            db.commit()
-        else:
-            import uuid
-            outlook_user = UserModel(
-                id=f"usr_{uuid.uuid4().hex[:12]}",
-                salon_id=chethan_salon.id,
-                name="Outlook Good",
-                email="outlookgood9@gmail.com",
-                phone="8296294666",
-                role="MASTER_ADMIN",
-                avatar="O",
-                password_hash=hash_password("Ruvexi2026!"),
-            )
-            db.add(outlook_user)
-            db.commit()
-
-        # Ensure 3 branches under this salon: chikmagalur, hassan, belur
-        branches_data = [
-            {
-                "id": f"brn_{chethan_salon.id[-8:]}_chik",
-                "name": "Chikmagalur",
-                "code": "BR-CHIK",
-                "city": "Chikmagalur",
-                "address": "opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
-                "phone": "8296294666",
-                "email": "outlookgood9@gmail.com",
-                "chairs": 6,
-            },
-            {
-                "id": f"brn_{chethan_salon.id[-8:]}_hassan",
-                "name": "Hassan",
-                "code": "BR-HASSAN",
-                "city": "Hassan",
-                "address": "Main Road, Near City Bus Stand, Hassan",
-                "phone": "8296294666",
-                "email": "outlookgood9@gmail.com",
-                "chairs": 6,
-            },
-            {
-                "id": f"brn_{chethan_salon.id[-8:]}_belur",
-                "name": "Belur",
-                "code": "BR-BELUR",
-                "city": "Belur",
-                "address": "Temple Road, Belur",
-                "phone": "8296294666",
-                "email": "outlookgood9@gmail.com",
-                "chairs": 5,
-            },
-        ]
-
-        existing_branches = {b.name.strip().lower(): b for b in db.query(BranchModel).filter(BranchModel.salon_id == chethan_salon.id).all()}
-        for b_data in branches_data:
-            key = b_data["name"].strip().lower()
-            if key in existing_branches:
-                br = existing_branches[key]
-                br.code = b_data["code"]
-                br.city = b_data["city"]
-                br.address = b_data["address"]
-                br.phone = b_data["phone"]
-                br.email = b_data["email"]
-                br.is_active = True
-            else:
-                br = BranchModel(
-                    id=b_data["id"],
-                    salon_id=chethan_salon.id,
-                    name=b_data["name"],
-                    code=b_data["code"],
-                    city=b_data["city"],
-                    address=b_data["address"],
-                    phone=b_data["phone"],
-                    email=b_data["email"],
-                    chairs=b_data["chairs"],
-                    is_active=True,
-                )
-                db.add(br)
-        db.commit()
-
-        # Seed all 125 services into chethan_salon
-        existing_srvs = {
-            (s.name.strip().lower(), s.category.strip().lower()): s
-            for s in db.query(ServiceModel).filter(ServiceModel.salon_id == chethan_salon.id).all()
-        }
-        for item in OLG_CATALOG:
-            key = (item["name"].strip().lower(), item["category"].strip().lower())
-            if key in existing_srvs:
-                s = existing_srvs[key]
-                s.price = item["price"]
-                s.duration_minutes = item["duration_minutes"]
-                s.buffer_minutes = item.get("buffer_minutes", 5)
-                s.description = item.get("description", "")
-                s.is_active = True
-                s.is_online_bookable = True
-                s.popular = item.get("popular", False)
-            else:
-                s = ServiceModel(
-                    id=f"srv_c_{item['id']}",
-                    salon_id=chethan_salon.id,
-                    name=item["name"],
-                    category=item["category"],
-                    price=item["price"],
-                    duration_minutes=item["duration_minutes"],
-                    buffer_minutes=item.get("buffer_minutes", 5),
-                    description=item.get("description", ""),
-                    is_active=True,
-                    is_online_bookable=True,
-                    popular=item.get("popular", False),
-                )
-                db.add(s)
-        db.commit()
-        print(f"[Seed] Successfully configured Chethan MASTER_ADMIN salon ({chethan_salon.name}) with 3 branches and {len(OLG_CATALOG)} services.")
-    except Exception as e_chethan:
-        db.rollback()
-        print(f"[Seed Notice] Chethan salon setup notice: {e_chethan}")
-
-    # Explicit purge of decommissioned demo / test accounts and salons
-    try:
-        purge_decommissioned_accounts(db)
-    except Exception as e_purge:
-        db.rollback()
-        print(f"[Seed Notice] Decommissioned accounts purge notice: {e_purge}")
-
+    # Clean architecture: pure schema checks only. No mock accounts, no hardcoded demo data.
     return
 
 
-def purge_decommissioned_accounts(db: Session) -> list:
-    """Permanently purges decommissioned demo, test, and placeholder accounts and salons."""
-    DECOMMISSIONED_EMAILS = [
-        "ruvexisolutions@gmail.com",
-        "verified.manager.1794256393@ruvexi.com",
-        "founder@ruvexisolutions.com",
-        "director.test@ruvexi.com",
-        "probe_check_1234@ruvexi.com",
-        "sunil@billcaresalon.com",
-    ]
-    DECOMMISSIONED_SLUGS = [
-        "ruvexis-salon-&-spa-86a0",
-        "ruvexi-luxury-flagship-fd63",
-        "ruvexi-atelier-bengaluru-480a",
-        "ruvexi-test-atelier-a101",
-        "probe-salon-ce49",
-        "aura-luxury-salon-&-spa-9f22",
-    ]
-    DECOMMISSIONED_SALON_IDS = [
-        "sln_768aef32ad07",
-        "sln_5ba8ec0b93cf",
-        "sln_494b36e0007b",
-        "sln_82e722804d9b",
-        "sln_49029c100894",
-        "sln_66c2243a0701",
-    ]
-
+def wipe_all_data(db: Session) -> dict:
+    """
+    Permanently erases ALL accounts, salons, branches, appointments, services,
+    customers, staff, invoices, payments, and operational data.
+    Zero hardcoded values, zero stale accounts.
+    """
     from .models import (
         SalonModel,
         UserModel,
@@ -596,50 +249,41 @@ def purge_decommissioned_accounts(db: Session) -> list:
         InventoryLedgerModel,
         WhatsAppMessageModel,
         InvitationModel,
+        BlockedTimeSlotModel,
     )
-
-    # 1. Locate all salons matching criteria
-    target_salons = db.query(SalonModel).filter(
-        (SalonModel.id.in_(DECOMMISSIONED_SALON_IDS)) |
-        (SalonModel.slug.in_(DECOMMISSIONED_SLUGS)) |
-        (SalonModel.email.in_(DECOMMISSIONED_EMAILS))
-    ).all()
-
-    target_salon_ids = set(s.id for s in target_salons)
-    for sid in DECOMMISSIONED_SALON_IDS:
-        target_salon_ids.add(sid)
-
-    removed_salons_info = []
-
-    if target_salon_ids:
-        # Cascade delete child entities
-        db.query(StaffModel).filter(StaffModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(ServiceModel).filter(ServiceModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(CustomerModel).filter(CustomerModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(AppointmentModel).filter(AppointmentModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(InvoiceModel).filter(InvoiceModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(PaymentModel).filter(PaymentModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(FollowUpModel).filter(FollowUpModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(FeedbackModel).filter(FeedbackModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(InventoryModel).filter(InventoryModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(InventoryLedgerModel).filter(InventoryLedgerModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(ExpenseModel).filter(ExpenseModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(BranchModel).filter(BranchModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(CashRegisterShiftModel).filter(CashRegisterShiftModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(WhatsAppMessageModel).filter(WhatsAppMessageModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-        db.query(InvitationModel).filter(InvitationModel.salon_id.in_(target_salon_ids)).delete(synchronize_session=False)
-
-        for s in target_salons:
-            removed_salons_info.append({"id": s.id, "name": s.name, "email": s.email})
-            db.delete(s)
-
-    # 2. Locate and delete matching users
-    db.query(UserModel).filter(
-        (UserModel.salon_id.in_(target_salon_ids)) |
-        (UserModel.email.in_(DECOMMISSIONED_EMAILS))
-    ).delete(synchronize_session=False)
-
+    counts = {}
+    models_in_order = [
+        ("appointments", AppointmentModel),
+        ("invoices", InvoiceModel),
+        ("payments", PaymentModel),
+        ("feedbacks", FeedbackModel),
+        ("follow_ups", FollowUpModel),
+        ("customers", CustomerModel),
+        ("staff", StaffModel),
+        ("inventory_ledger", InventoryLedgerModel),
+        ("inventory", InventoryModel),
+        ("expenses", ExpenseModel),
+        ("cash_register_shifts", CashRegisterShiftModel),
+        ("whatsapp_messages", WhatsAppMessageModel),
+        ("invitations", InvitationModel),
+        ("blocked_time_slots", BlockedTimeSlotModel),
+        ("branches", BranchModel),
+        ("services", ServiceModel),
+        ("users", UserModel),
+        ("salons", SalonModel),
+    ]
+    for name, model_cls in models_in_order:
+        try:
+            cnt = db.query(model_cls).delete(synchronize_session=False)
+            counts[name] = cnt
+        except Exception as e:
+            counts[name] = f"error: {e}"
     db.commit()
-    if removed_salons_info:
-        print(f"[Decommission Purge] Successfully removed {len(removed_salons_info)} decommissioned salons: {removed_salons_info}")
-    return removed_salons_info
+    print(f"[Clean Slate Wipe] Database completely wiped: {counts}")
+    return counts
+
+
+def purge_decommissioned_accounts(db: Session) -> list:
+    """Delegates to wipe_all_data to maintain a completely clean database."""
+    res = wipe_all_data(db)
+    return [res]

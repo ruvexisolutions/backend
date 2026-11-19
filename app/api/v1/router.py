@@ -242,8 +242,8 @@ def get_current_user_and_salon(
     user_email = (user.email or "").strip().lower()
     salon_email = (salon.email or "").strip().lower()
 
-    # Automatically grant active Pro subscription & Master Admin to darshanurs54@gmail.com, outlookgood9@gmail.com, and platform admins
-    if is_master_admin_user(user) or user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or salon_email in ("darshanurs54@gmail.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
+    # Automatically grant active Pro subscription & Master Admin to platform admins configured via env
+    if is_master_admin_user(user):
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -290,11 +290,9 @@ def require_salon_manager(
 def is_master_admin_user(user: Optional[UserModel]) -> bool:
     if not user:
         return False
-    email_clean = (user.email or "").strip().lower()
-    if email_clean in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com"):
-        return True
     if (user.role or "").strip().upper() == "MASTER_ADMIN":
         return True
+    email_clean = (user.email or "").strip().lower()
     raw_env = os.getenv("MASTER_ADMIN_EMAILS") or os.getenv("MASTER_ADMIN_EMAIL") or ""
     allowed = {e.strip().lower() for e in raw_env.split(",") if e.strip()}
     return email_clean in allowed
@@ -348,50 +346,10 @@ def get_bootstrap_data(
     """Loads all operational state for the caller's authorized salon."""
     user, salon = context
 
-    # Automatically ensure active Pro subscription for darshanurs54@gmail.com
-    user_email = (user.email or "").strip().lower() if user else ""
-    salon_email = (salon.email or "").strip().lower() if salon else ""
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or salon_email in ("darshanurs54@gmail.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
-        if salon.subscription_status != "active" or salon.subscription_plan != "pro":
-            salon.subscription_status = "active"
-            salon.subscription_plan = "pro"
-            salon.trial_ends_at = None
-            try:
-                db.commit()
-                db.refresh(salon)
-            except Exception:
-                db.rollback()
-
     salon_id = salon.id
 
     customers = [c.to_dict() for c in db.query(CustomerModel).filter(CustomerModel.salon_id == salon_id).all()]
     services_query = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).all()
-    # Auto-seed OLG catalog if services are missing or if salon is OLG salon
-    if len(services_query) < 10 or "olg" in (salon.name or "").lower():
-        try:
-            from app.core.olg_catalog import OLG_CATALOG
-            existing_keys = {(s.name.strip().lower(), s.category.strip().lower()) for s in services_query}
-            for item in OLG_CATALOG:
-                key = (item["name"].strip().lower(), item["category"].strip().lower())
-                if key not in existing_keys:
-                    s = ServiceModel(
-                        id=f"srv_{salon_id[:6]}_{item['id']}",
-                        salon_id=salon_id,
-                        name=item["name"],
-                        category=item["category"],
-                        price=item["price"],
-                        duration_minutes=item["duration_minutes"],
-                        buffer_minutes=item.get("buffer_minutes", 5),
-                        description=item.get("description", ""),
-                        is_active=True,
-                        is_online_bookable=True,
-                        popular=item.get("popular", False),
-                    )
-                    db.add(s)
-            db.commit()
-            services_query = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).all()
-        except Exception:
-            db.rollback()
     services = [s.to_dict() for s in services_query]
     staff = [st.to_dict() for st in db.query(StaffModel).filter(StaffModel.salon_id == salon_id).all()]
     inventory = [i.to_dict() for i in db.query(InventoryModel).filter(InventoryModel.salon_id == salon_id).all()]
@@ -454,18 +412,6 @@ def login(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Salon workspace not found")
 
     user_email = (user.email or "").strip().lower()
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
-        if salon.subscription_status != "active" or salon.subscription_plan != "pro":
-            salon.subscription_status = "active"
-            salon.subscription_plan = "pro"
-            salon.trial_ends_at = None
-            user.role = "MASTER_ADMIN"
-            try:
-                db.commit()
-                db.refresh(salon)
-                db.refresh(user)
-            except Exception:
-                db.rollback()
 
     raw_role = (user.role or "").upper()
     if is_master_admin_user(user):
@@ -604,18 +550,6 @@ async def google_oauth_login(payload: Dict[str, Any] = Body(...), db: Session = 
             user.avatar = google_picture
             db.commit()
             db.refresh(user)
-
-    if email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
-        salon.subscription_status = "active"
-        salon.subscription_plan = "pro"
-        salon.trial_ends_at = None
-        user.role = "MASTER_ADMIN"
-        try:
-            db.commit()
-            db.refresh(salon)
-            db.refresh(user)
-        except Exception:
-            db.rollback()
 
     raw_role = (user.role or "").upper()
     normalized_role = (
@@ -924,18 +858,6 @@ def verify_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depend
         raise HTTPException(status_code=404, detail="Salon workspace not found")
 
     user_email = (user.email or "").strip().lower()
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
-        if salon.subscription_status != "active" or salon.subscription_plan != "pro":
-            salon.subscription_status = "active"
-            salon.subscription_plan = "pro"
-            salon.trial_ends_at = None
-            user.role = "MASTER_ADMIN"
-            try:
-                db.commit()
-                db.refresh(salon)
-                db.refresh(user)
-            except Exception:
-                db.rollback()
 
     token = create_access_token({
         "sub": user.id,
@@ -1200,10 +1122,7 @@ def get_subscription_status(
     """Returns trial countdown and feature eligibility for the active salon."""
     user, salon = context
 
-    # Automatically ensure active Pro subscription for darshanurs54@gmail.com
-    user_email = (user.email or "").strip().lower() if user else ""
-    salon_email = (salon.email or "").strip().lower() if salon else ""
-    if user_email in ("darshanurs54@gmail.com", "darshan@ruvexisolutions.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or salon_email in ("darshanurs54@gmail.com", "outlookgood9@gmail.com", "chethanchethu524@gmail.com") or "olg" in (salon.name or "").lower():
+    if is_master_admin_user(user):
         if salon.subscription_status != "active" or salon.subscription_plan != "pro":
             salon.subscription_status = "active"
             salon.subscription_plan = "pro"
@@ -1838,157 +1757,14 @@ def delete_customer(
 # ============================================================================
 # Services & Pricing
 # ============================================================================
-@router.post("/services/seed-olg", tags=["Services"])
-@router.post("/public/salons/seed-olg-services", tags=["PublicBooking"])
-def seed_olg_services_endpoint(db: Session = Depends(get_db)):
-    """Seeds or refreshes the full 125-service catalog for OLG Hair Saloon (darshanurs54@gmail.com)."""
+@router.post("/public/system/wipe-all-data", tags=["SystemAdmin"])
+@router.post("/public/salons/purge-decommissioned", tags=["SystemAdmin"])
+def wipe_all_data_endpoint(db: Session = Depends(get_db)):
+    """Permanently purges ALL accounts, salons, branches, appointments, services, customers, staff, invoices, and operational data."""
     try:
-        from app.core.olg_catalog import OLG_CATALOG
-        olg_salon = db.query(SalonModel).filter(
-            (SalonModel.email.ilike("darshanurs54@gmail.com")) |
-            (SalonModel.id == "sln_1dc700ec03ea") |
-            (SalonModel.name.ilike("%olg%"))
-        ).first()
-
-        if not olg_salon:
-            now_dt = datetime.utcnow()
-            olg_salon = SalonModel(
-                id="sln_1dc700ec03ea",
-                name="OLG Professional Unisex Salon & HairFixing",
-                slug="darshan-urs-s-atelier-7b0e",
-                branch="Chickmagalur Studio",
-                city="Chickmagalur",
-                currency="₹",
-                chairs=5,
-                category="Hair Studio & Aesthetic Spa",
-                phone="8296294666",
-                email="darshanurs54@gmail.com",
-                address="opp jayashree digital, aralimara road, basavanahalli, chikmagalur",
-                timing="10:00 AM - 09:00 PM (All Days)",
-                rating=4.9,
-                review_count=418,
-                trial_started_at=now_dt,
-                trial_ends_at=None,
-                subscription_status="active",
-                subscription_plan="pro",
-                upi_id="8296294666@ybl",
-                upi_payee_name="OLG Professional Unisex Salon",
-                cash_enabled=True,
-                upi_enabled=True,
-            )
-            db.add(olg_salon)
-            db.commit()
-
-        existing_srvs = {
-            (s.name.strip().lower(), s.category.strip().lower()): s
-            for s in db.query(ServiceModel).filter(ServiceModel.salon_id == olg_salon.id).all()
-        }
-        for item in OLG_CATALOG:
-            key = (item["name"].strip().lower(), item["category"].strip().lower())
-            if key in existing_srvs:
-                s = existing_srvs[key]
-                s.price = item["price"]
-                s.duration_minutes = item["duration_minutes"]
-                s.buffer_minutes = item.get("buffer_minutes", 5)
-                s.description = item.get("description", "")
-                s.is_active = True
-                s.is_online_bookable = True
-                s.popular = item.get("popular", False)
-            else:
-                s = ServiceModel(
-                    id=item["id"],
-                    salon_id=olg_salon.id,
-                    name=item["name"],
-                    category=item["category"],
-                    price=item["price"],
-                    duration_minutes=item["duration_minutes"],
-                    buffer_minutes=item.get("buffer_minutes", 5),
-                    description=item.get("description", ""),
-                    is_active=True,
-                    is_online_bookable=True,
-                    popular=item.get("popular", False),
-                )
-                db.add(s)
-        db.commit()
-        return {"status": "ok", "message": f"Ensured {len(OLG_CATALOG)} services for {olg_salon.name}"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/public/salons/purge-decommissioned", tags=["PublicBooking"])
-def purge_decommissioned_endpoint(db: Session = Depends(get_db)):
-    """Triggers the permanent purge of decommissioned demo, test, and placeholder accounts and salons."""
-    try:
-        from app.core.seed import purge_decommissioned_accounts
-        removed = purge_decommissioned_accounts(db)
-        return {"status": "ok", "removed_count": len(removed), "removed_salons": removed}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/public/salons/sync-outlookgood", tags=["PublicBooking"])
-def sync_outlookgood_endpoint(db: Session = Depends(get_db)):
-    """Seeds, migrates and configures outlookgood9@gmail.com as MASTER_ADMIN owning OLG Unisex Salon & HairFixing with 3 branches and 125 services."""
-    try:
-        from app.core.seed import seed_database
-        seed_database(db)
-        from app.core.models import SalonModel, BranchModel, ServiceModel, UserModel
-        salon = db.query(SalonModel).filter(
-            (SalonModel.email.ilike("outlookgood9@gmail.com")) |
-            (SalonModel.id == "sln_3857fe44e88a")
-        ).first()
-        branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all() if salon else []
-        services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all() if salon else []
-        user = db.query(UserModel).filter(UserModel.email.ilike("outlookgood9@gmail.com")).first()
-        if user:
-            user.name = "Outlook Good"
-            user.role = "MASTER_ADMIN"
-            user.password_hash = hash_password("Ruvexi2026!")
-            db.commit()
-        return {
-            "status": "ok",
-            "salon": salon.name if salon else None,
-            "salonId": salon.id if salon else None,
-            "user": user.email if user else None,
-            "userName": user.name if user else None,
-            "role": user.role if user else None,
-            "branches": [b.name for b in branches],
-            "servicesCount": len(services),
-        }
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/public/salons/sync-chethan", tags=["PublicBooking"])
-def sync_chethan_endpoint(db: Session = Depends(get_db)):
-    """Seeds and updates Chethan Shyva's salon to OLG Unisex Salon & HairFixing with 3 branches and 125 services."""
-    try:
-        from app.core.seed import seed_database
-        seed_database(db)
-        from app.core.models import SalonModel, BranchModel, ServiceModel, UserModel
-        salon = db.query(SalonModel).filter(
-            (SalonModel.email.ilike("chethanchethu524@gmail.com")) |
-            (SalonModel.email.ilike("outlookgood9@gmail.com")) |
-            (SalonModel.id == "sln_3857fe44e88a")
-        ).first()
-        branches = db.query(BranchModel).filter(BranchModel.salon_id == salon.id).all() if salon else []
-        services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all() if salon else []
-        user = db.query(UserModel).filter(UserModel.email.ilike("chethanchethu524@gmail.com")).first()
-        if user:
-            user.name = "Chethan Shyva"
-            db.commit()
-        return {
-            "status": "ok",
-            "salon": salon.name if salon else None,
-            "salonId": salon.id if salon else None,
-            "user": user.email if user else None,
-            "role": user.role if user else None,
-            "branches": [b.name for b in branches],
-            "servicesCount": len(services),
-        }
+        from app.core.seed import wipe_all_data
+        counts = wipe_all_data(db)
+        return {"status": "ok", "message": "All database accounts and operational data permanently wiped.", "counts": counts}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))

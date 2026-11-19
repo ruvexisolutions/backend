@@ -255,16 +255,9 @@ def ensure_schema_compatibility():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure tables exist & seed default data
+    # Startup: Ensure tables exist
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility()
-    db = SessionLocal()
-    try:
-        seed_database(db)
-    except Exception as e:
-        print(f"[Seed Graceful Catch] {e}")
-    finally:
-        db.close()
     yield
     # Shutdown logic if any
 
