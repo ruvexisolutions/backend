@@ -234,6 +234,9 @@ def wipe_all_data(db: Session) -> dict:
     from .models import (
         SalonModel,
         UserModel,
+        InvitationModel,
+        OTPModel,
+        BranchModel,
         CustomerModel,
         ServiceModel,
         StaffModel,
@@ -242,14 +245,11 @@ def wipe_all_data(db: Session) -> dict:
         InvoiceModel,
         FollowUpModel,
         FeedbackModel,
-        PaymentModel,
-        BranchModel,
+        WhatsAppMessageModel,
         CashRegisterShiftModel,
         ExpenseModel,
         InventoryLedgerModel,
-        WhatsAppMessageModel,
-        InvitationModel,
-        BlockedTimeSlotModel,
+        PaymentModel,
     )
     counts = {}
     models_in_order = [
@@ -266,7 +266,7 @@ def wipe_all_data(db: Session) -> dict:
         ("cash_register_shifts", CashRegisterShiftModel),
         ("whatsapp_messages", WhatsAppMessageModel),
         ("invitations", InvitationModel),
-        ("blocked_time_slots", BlockedTimeSlotModel),
+        ("otps", OTPModel),
         ("branches", BranchModel),
         ("services", ServiceModel),
         ("users", UserModel),
