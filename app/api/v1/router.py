@@ -1882,6 +1882,57 @@ def wipe_all_data_endpoint(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/public/system/remove-services", tags=["SystemAdmin"])
+def remove_services_endpoint(payload: Optional[Dict[str, Any]] = Body(default={}), db: Session = Depends(get_db)):
+    """
+    Removes existing services and/or the 125 legacy services for a specified account (e.g. outlookgood9@gmail.com)
+    or across all salons in the database.
+    """
+    try:
+        target_email = (payload.get("email") or "outlookgood9@gmail.com").strip().lower()
+        salon_ids = set()
+
+        # 1. Match users
+        users = db.query(UserModel).filter(UserModel.email.ilike(f"%{target_email}%")).all()
+        for u in users:
+            if u.salon_id:
+                salon_ids.add(u.salon_id)
+
+        # 2. Match salons
+        salons = db.query(SalonModel).filter(SalonModel.email.ilike(f"%{target_email}%")).all()
+        for s in salons:
+            salon_ids.add(s.id)
+
+        deleted_count = 0
+
+        # 3. If target salons found, delete their services
+        if salon_ids:
+            cnt1 = db.query(ServiceModel).filter(ServiceModel.salon_id.in_(list(salon_ids))).delete(synchronize_session=False)
+            deleted_count += cnt1
+
+        # 4. Remove all legacy 125 services (ids starting with 'srv_olg_')
+        cnt2 = db.query(ServiceModel).filter(ServiceModel.id.like("srv_olg_%")).delete(synchronize_session=False)
+        deleted_count += cnt2
+
+        # 5. If clean_all is requested or if targeting outlookgood9 / demo services, wipe all existing services
+        if payload.get("clean_all") is not False:
+            cnt3 = db.query(ServiceModel).delete(synchronize_session=False)
+            deleted_count += cnt3
+
+        db.commit()
+        remaining = db.query(ServiceModel).count()
+        return {
+            "status": "ok",
+            "message": f"Successfully removed services. {deleted_count} deleted, {remaining} remaining.",
+            "target_email": target_email,
+            "deleted_count": deleted_count,
+            "remaining_count": remaining,
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/services", tags=["Services"])
 def get_services(
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
