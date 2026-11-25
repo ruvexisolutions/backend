@@ -982,34 +982,55 @@ def create_receptionist_invitation(
 
 @router.get("/invitations/{token}", tags=["Invitations"])
 def get_invitation_details(token: str, db: Session = Depends(get_db)):
-    """Validates invitation token and retrieves salon & branch information for the receptionist."""
+    """Validates invitation token or salon ID and retrieves salon & branch information for receptionist enrollment."""
+    # 1. Check if token matches a direct InvitationModel
     invitation = db.query(InvitationModel).filter(
         InvitationModel.token == token
     ).first()
 
-    if not invitation:
-        raise HTTPException(status_code=404, detail="Invitation link is invalid")
+    if invitation:
+        # If invitation was pending but expired, automatically renew for 30 days
+        if not invitation.is_accepted and invitation.expires_at < datetime.utcnow():
+            invitation.expires_at = datetime.utcnow() + timedelta(days=30)
+            db.commit()
+            db.refresh(invitation)
 
-    # If invitation was pending but expired, automatically renew for 30 days
-    if not invitation.is_accepted and invitation.expires_at < datetime.utcnow():
-        invitation.expires_at = datetime.utcnow() + timedelta(days=30)
-        db.commit()
-        db.refresh(invitation)
+        salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
+        branch = db.query(BranchModel).filter(BranchModel.id == invitation.branch_id).first() if invitation.branch_id else None
 
-    salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
-    branch = db.query(BranchModel).filter(BranchModel.id == invitation.branch_id).first() if invitation.branch_id else None
+        return {
+            "valid": True,
+            "isSalonLink": False,
+            "isAccepted": invitation.is_accepted,
+            "email": invitation.email,
+            "role": invitation.role,
+            "salonName": salon.name if salon else "Ruvexi Studio",
+            "salonId": invitation.salon_id,
+            "branchId": invitation.branch_id,
+            "branchName": branch.name if branch else (salon.branch if salon else "Flagship Studio"),
+            "expiresAt": invitation.expires_at.isoformat()
+        }
 
-    return {
-        "valid": True,
-        "isAccepted": invitation.is_accepted,
-        "email": invitation.email,
-        "role": invitation.role,
-        "salonName": salon.name if salon else "Ruvexi Studio",
-        "salonId": invitation.salon_id,
-        "branchId": invitation.branch_id,
-        "branchName": branch.name if branch else (salon.branch if salon else "Flagship Studio"),
-        "expiresAt": invitation.expires_at.isoformat()
-    }
+    # 2. Check if token matches a Salon ID or Slug (Universal Salon Team Link)
+    salon = db.query(SalonModel).filter(
+        (SalonModel.id == token) | (SalonModel.slug == token)
+    ).first()
+
+    if salon:
+        return {
+            "valid": True,
+            "isSalonLink": True,
+            "isAccepted": False,
+            "email": "",
+            "role": "SALON_RECEPTIONIST",
+            "salonName": salon.name,
+            "salonId": salon.id,
+            "branchId": None,
+            "branchName": salon.branch or "Flagship Studio",
+            "expiresAt": (datetime.utcnow() + timedelta(days=365)).isoformat()
+        }
+
+    raise HTTPException(status_code=404, detail="Invitation link is invalid")
 
 
 @router.get("/invitations", tags=["Invitations"])
@@ -1045,32 +1066,44 @@ def cancel_invitation(
 @router.post("/invitations/request-otp", tags=["Invitations"])
 def request_invitation_otp(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
     """
-    Sends a 6-digit verification OTP to the invited receptionist's email
-    before allowing account activation.
+    Sends a 6-digit verification OTP to the receptionist's email
+    before allowing account activation. Supports individual invite tokens and Universal Salon Team Links.
     """
     token = (payload.get("token") or "").strip()
     name = (payload.get("name") or "Receptionist").strip()
+    user_email = (payload.get("email") or "").strip().lower()
 
     if not token:
-        raise HTTPException(status_code=400, detail="Invitation token is required")
+        raise HTTPException(status_code=400, detail="Invitation token or salon ID is required")
 
     invitation = db.query(InvitationModel).filter(
         InvitationModel.token == token
     ).first()
 
-    if not invitation:
-        raise HTTPException(status_code=400, detail="Invitation link is invalid")
+    clean_email = None
 
-    if invitation.is_accepted:
-        raise HTTPException(status_code=400, detail="This invitation has already been accepted. Please sign in.")
+    if invitation:
+        if invitation.is_accepted:
+            raise HTTPException(status_code=400, detail="This invitation has already been accepted. Please sign in.")
 
-    # Auto-renew if expired
-    if invitation.expires_at < datetime.utcnow():
-        invitation.expires_at = datetime.utcnow() + timedelta(days=30)
-        db.commit()
-        db.refresh(invitation)
+        # Auto-renew if expired
+        if invitation.expires_at < datetime.utcnow():
+            invitation.expires_at = datetime.utcnow() + timedelta(days=30)
+            db.commit()
+            db.refresh(invitation)
 
-    clean_email = invitation.email.strip().lower()
+        clean_email = user_email if user_email and "@" in user_email else invitation.email.strip().lower()
+    else:
+        # Check if Universal Salon Link
+        salon = db.query(SalonModel).filter(
+            (SalonModel.id == token) | (SalonModel.slug == token)
+        ).first()
+        if not salon:
+            raise HTTPException(status_code=400, detail="Invitation link is invalid")
+
+        if not user_email or "@" not in user_email:
+            raise HTTPException(status_code=400, detail="A valid work email is required to receive verification code")
+        clean_email = user_email
 
     # Rate limiting: max 5 requests per 10 minutes
     ten_min_ago = datetime.utcnow() - timedelta(minutes=10)
@@ -1113,14 +1146,15 @@ def request_invitation_otp(payload: Dict[str, Any] = Body(...), db: Session = De
 
 @router.post("/invitations/accept", tags=["Invitations"])
 def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
-    """Enrolls receptionist into the authorized salon & branch using the single-use token."""
+    """Enrolls receptionist into the authorized salon & branch using an invitation token or Universal Salon Link."""
     token = (payload.get("token") or "").strip()
     name = (payload.get("name") or "").strip()
     password = payload.get("password") or ""
     phone = (payload.get("phone") or "").strip()
     otp_code = (payload.get("otp") or "").strip()
+    user_email = (payload.get("email") or "").strip().lower()
 
-    print(f"[Invitation Accept] Attempting accept for token: '{token}', name: '{name}', phone: '{phone}', has_otp: {bool(otp_code)}")
+    print(f"[Invitation Accept] Attempting accept for token: '{token}', name: '{name}', email: '{user_email}', phone: '{phone}', has_otp: {bool(otp_code)}")
 
     if not token:
         print("[Invitation Accept Error] Missing token")
@@ -1136,30 +1170,47 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
         InvitationModel.token == token
     ).first()
 
-    if not invitation:
-        print(f"[Invitation Accept Error] Invitation not found for token: '{token}'")
-        raise HTTPException(status_code=400, detail="Invitation link is invalid")
+    salon = None
+    clean_email = None
+    branch_id = None
 
-    salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
-    if not salon:
-        print(f"[Invitation Accept Error] Salon {invitation.salon_id} not found")
-        raise HTTPException(status_code=404, detail="Salon workspace not found")
+    if invitation:
+        salon = db.query(SalonModel).filter(SalonModel.id == invitation.salon_id).first()
+        if not salon:
+            print(f"[Invitation Accept Error] Salon {invitation.salon_id} not found")
+            raise HTTPException(status_code=404, detail="Salon workspace not found")
 
-    # If invitation was pending but expired, automatically renew
-    if not invitation.is_accepted and invitation.expires_at < datetime.utcnow():
-        invitation.expires_at = datetime.utcnow() + timedelta(days=30)
-        db.commit()
-        db.refresh(invitation)
+        # If invitation was pending but expired, automatically renew
+        if not invitation.is_accepted and invitation.expires_at < datetime.utcnow():
+            invitation.expires_at = datetime.utcnow() + timedelta(days=30)
+            db.commit()
+            db.refresh(invitation)
 
-    clean_email = invitation.email.strip().lower()
+        clean_email = user_email if user_email and "@" in user_email else invitation.email.strip().lower()
+        branch_id = invitation.branch_id
+    else:
+        # Check if Universal Salon Link
+        salon = db.query(SalonModel).filter(
+            (SalonModel.id == token) | (SalonModel.slug == token)
+        ).first()
+
+        if not salon:
+            print(f"[Invitation Accept Error] Neither invitation nor salon found for token: '{token}'")
+            raise HTTPException(status_code=400, detail="Invitation link is invalid")
+
+        if not user_email or "@" not in user_email:
+            raise HTTPException(status_code=400, detail="A valid work email is required to complete enrollment")
+
+        clean_email = user_email
 
     # Check if this email is already registered
-    existing_user = db.query(UserModel).filter(UserModel.email.ilike(invitation.email)).first()
+    existing_user = db.query(UserModel).filter(UserModel.email.ilike(clean_email)).first()
     if existing_user:
-        if existing_user.salon_id == invitation.salon_id:
+        if existing_user.salon_id == salon.id:
             # Idempotent re-enrollment / session issuance
-            invitation.is_accepted = True
-            db.commit()
+            if invitation:
+                invitation.is_accepted = True
+                db.commit()
             auth_token = create_access_token({
                 "sub": existing_user.id,
                 "email": existing_user.email,
@@ -1218,9 +1269,9 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
     new_user = UserModel(
         id=f"usr_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
-        branch_id=invitation.branch_id,
+        branch_id=branch_id,
         name=name,
-        email=invitation.email,
+        email=clean_email,
         phone=phone,
         role="SALON_RECEPTIONIST",
         password_hash=hash_password(password),
@@ -1231,15 +1282,15 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
     # Automatically add or update Staff table record with branch allotment
     existing_staff = db.query(StaffModel).filter(
         StaffModel.salon_id == salon.id,
-        StaffModel.email == invitation.email
+        StaffModel.email == clean_email
     ).first()
     if not existing_staff:
         new_staff = StaffModel(
             id=f"stf_{uuid.uuid4().hex[:12]}",
             salon_id=salon.id,
-            branch_id=invitation.branch_id,
+            branch_id=branch_id,
             name=name,
-            email=invitation.email,
+            email=clean_email,
             phone=phone,
             role="Salon Receptionist",
             commission_rate=0.0,
@@ -1251,9 +1302,10 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
         )
         db.add(new_staff)
     else:
-        existing_staff.branch_id = invitation.branch_id
+        existing_staff.branch_id = branch_id
 
-    invitation.is_accepted = True
+    if invitation:
+        invitation.is_accepted = True
     db.commit()
     db.refresh(new_user)
 
@@ -1263,10 +1315,10 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
         "name": new_user.name,
         "role": "SALON_RECEPTIONIST",
         "salon_id": salon.id,
-        "branch_id": invitation.branch_id,
+        "branch_id": branch_id,
     })
 
-    print(f"[Invitation Accept Success] Receptionist {name} ({invitation.email}) enrolled into salon {salon.name} (branch: {invitation.branch_id})")
+    print(f"[Invitation Accept Success] Receptionist {name} ({clean_email}) enrolled into salon {salon.name} (branch: {branch_id})")
 
     return {
         "success": True,
