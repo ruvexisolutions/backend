@@ -1132,11 +1132,18 @@ def request_invitation_otp(payload: Dict[str, Any] = Body(...), db: Session = De
     db.add(otp_record)
     db.commit()
 
-    send_otp_email(clean_email, name, otp_code)
+    email_result = send_otp_email(clean_email, name, otp_code)
+    email_sent = bool(email_result.get("sent"))
 
     response_payload = {
         "success": True,
-        "message": f"6-digit verification code sent to {clean_email}. Valid for 10 minutes.",
+        "emailSent": email_sent,
+        "emailError": email_result.get("error"),
+        "message": (
+            f"6-digit verification code sent to {clean_email}. Valid for 10 minutes."
+            if email_sent
+            else f"Verification code generated for {clean_email} (email delivery pending: {email_result.get('error')})."
+        ),
     }
     if not (os.getenv("RESEND_API_KEY") or "").strip() or os.getenv("ALLOW_DEV_OTP", "").lower() == "true":
         response_payload["dev_otp"] = otp_code
