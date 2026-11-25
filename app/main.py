@@ -61,6 +61,24 @@ def ensure_schema_compatibility():
                     else:
                         conn.execute(text("ALTER TABLE branches ADD COLUMN code VARCHAR(32)"))
 
+        # Branches per-branch UPI fields
+        if "branches" in tables:
+            brn_cols2 = [c["name"] for c in inspector.get_columns("branches")]
+            for col_name, col_def in [
+                ("upi_id", "VARCHAR(128)"),
+                ("upi_payee_name", "VARCHAR(128)"),
+                ("upi_enabled", "BOOLEAN DEFAULT FALSE"),
+            ]:
+                if col_name not in brn_cols2:
+                    try:
+                        with engine.begin() as conn:
+                            if is_postgres:
+                                conn.execute(text(f"ALTER TABLE branches ADD COLUMN IF NOT EXISTS {col_name} {col_def}"))
+                            else:
+                                conn.execute(text(f"ALTER TABLE branches ADD COLUMN {col_name} {col_def}"))
+                    except Exception:
+                        pass
+
         # Cash register shifts branch_id
         if "cash_register_shifts" in tables:
             crs_cols = [c["name"] for c in inspector.get_columns("cash_register_shifts")]

@@ -55,6 +55,17 @@ router = APIRouter(prefix="/api/v1")
 # Standard UPI VPA format: e.g. salon@okhdfcbank, 9845011223@paytm
 UPI_VPA_REGEX = re.compile(r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$")
 
+def _resolve_upi(branch, salon) -> tuple:
+    """Returns (effective_vpa, effective_payee_name) using branch UPI first, falling back to salon."""
+    vpa = (branch.upi_id or "").strip() if branch else ""
+    payee = (branch.upi_payee_name or "").strip() if branch else ""
+    if not vpa:
+        vpa = (salon.upi_id or "").strip()
+        payee = payee or (salon.upi_payee_name or salon.name or "")
+    payee = payee or salon.name or ""
+    return vpa, payee
+
+
 def generate_upi_payment_uri(vpa: str, payee_name: str, amount: float, invoice_ref: str) -> str:
     """
     Constructs standard NPCI UPI payment intent URI.
@@ -1627,6 +1638,14 @@ def create_branch(
         chairs=int(data.get("chairs") or 6),
         is_active=bool(data.get("isActive", True))
     )
+    # Per-branch UPI (optional)
+    raw_branch_upi = str(data.get("upiId") or "").strip()
+    if raw_branch_upi:
+        if not UPI_VPA_REGEX.match(raw_branch_upi):
+            raise HTTPException(status_code=422, detail="Invalid UPI ID format for branch. Use format username@bank (e.g., mybranch@okhdfcbank).")
+        branch.upi_id = raw_branch_upi
+        branch.upi_enabled = True
+    branch.upi_payee_name = str(data.get("upiPayeeName") or "").strip() or None
     db.add(branch)
     db.commit()
     db.refresh(branch)
@@ -1656,6 +1675,21 @@ def update_branch(
         elif k == "email": branch.email = v
         elif k == "chairs": branch.chairs = int(v)
         elif k == "isActive": branch.is_active = bool(v)
+        elif k == "upiId":
+            raw_branch_upi = str(v or "").strip()
+            if raw_branch_upi:
+                if not UPI_VPA_REGEX.match(raw_branch_upi):
+                    raise HTTPException(status_code=422, detail="Invalid UPI ID format for branch. Use format username@bank (e.g., mybranch@okhdfcbank).")
+                branch.upi_id = raw_branch_upi
+                branch.upi_enabled = True
+            else:
+                branch.upi_id = None
+                branch.upi_enabled = False
+        elif k == "upiPayeeName": branch.upi_payee_name = str(v or "").strip() or None
+        elif k == "upiEnabled":
+            if bool(v) and not branch.upi_id:
+                raise HTTPException(status_code=400, detail="Cannot enable UPI for branch without configuring a valid UPI ID.")
+            branch.upi_enabled = bool(v)
 
     db.commit()
     db.refresh(branch)
@@ -2810,6 +2844,14 @@ def create_invoice(
 
     split_breakdown = data.get("paymentBreakdown") or data.get("splitDetails") or {}
 
+    # Resolve effective UPI for this invoice's branch (branch UPI overrides salon UPI)
+    _invoice_branch_id = str(data.get("branchId") or data.get("branch_id") or "").strip()
+    _invoice_branch = db.query(BranchModel).filter(
+        BranchModel.id == _invoice_branch_id,
+        BranchModel.salon_id == salon_id
+    ).first() if _invoice_branch_id else None
+    effective_upi_vpa, effective_upi_payee = _resolve_upi(_invoice_branch, salon)
+
     if requested_status == "paid":
         amount_received = grand_total
         change_given = 0.0
@@ -2829,7 +2871,7 @@ def create_invoice(
                     status_code=400,
                     detail=f"Split payment breakdown (₹{split_sum:,.2f}) is less than grand total (₹{grand_total:,.2f})."
                 )
-            if upi_part > 0 and (not salon.upi_enabled or not salon.upi_id):
+            if upi_part > 0 and (not effective_upi_vpa):
                 raise HTTPException(status_code=400, detail="UPI is disabled or unconfigured for the UPI portion of this split bill.")
             if wallet_part > 0:
                 if not cust or float(cust.wallet_balance or 0.0) < wallet_part:
@@ -2855,12 +2897,10 @@ def create_invoice(
             verification_method = "manual_cash_counter"
         elif payment_method == "UPI":
             provided_upi = str(data.get("upiId") or data.get("salonUpiId") or "").strip()
-            if provided_upi and not salon.upi_id:
-                salon.upi_id = provided_upi
-            if not salon.upi_enabled:
-                salon.upi_enabled = True
-            if not salon.upi_id:
-                salon.upi_id = provided_upi or "ruvexi.pos@upi"
+            if provided_upi and not effective_upi_vpa:
+                effective_upi_vpa = provided_upi
+            if not effective_upi_vpa:
+                effective_upi_vpa = provided_upi or "ruvexi.pos@upi"
             provided_ref = str(data.get("transactionReference") or data.get("upiReference") or data.get("paymentReference") or "").strip()
             if provided_ref and not provided_ref.startswith("BC-"):
                 duplicate_payment = db.query(PaymentModel).filter(
@@ -2908,9 +2948,9 @@ def create_invoice(
             verified_by_name=user.name if user else "Front Desk Staff",
             amount_received=amount_received,
             change_given=change_given,
-            upi_vpa_snapshot=salon.upi_id if payment_method == "UPI" else None,
-            upi_payee_name_snapshot=salon.upi_payee_name or salon.name if payment_method == "UPI" else None,
-            upi_uri_snapshot=generate_upi_payment_uri(salon.upi_id, salon.upi_payee_name or salon.name, grand_total, inv_number) if payment_method == "UPI" and salon.upi_id else None,
+            upi_vpa_snapshot=effective_upi_vpa if payment_method == "UPI" else None,
+            upi_payee_name_snapshot=effective_upi_payee if payment_method == "UPI" else None,
+            upi_uri_snapshot=generate_upi_payment_uri(effective_upi_vpa, effective_upi_payee, grand_total, inv_number) if payment_method == "UPI" and effective_upi_vpa else None,
             notes=data.get("notes", ""),
             audit_metadata_json=json.dumps({"ip": "127.0.0.1", "user_role": user.role if user else "STAFF", "timestamp": datetime.utcnow().isoformat()}),
             created_at=datetime.utcnow(),
@@ -3029,8 +3069,8 @@ def create_invoice(
             verification_method="unconfirmed",
             amount_received=0.0,
             change_given=0.0,
-            upi_vpa_snapshot=salon.upi_id if payment_method == "UPI" else None,
-            upi_payee_name_snapshot=salon.upi_payee_name or salon.name if payment_method == "UPI" else None,
+            upi_vpa_snapshot=effective_upi_vpa if payment_method == "UPI" else None,
+            upi_payee_name_snapshot=effective_upi_payee if payment_method == "UPI" else None,
             created_at=datetime.utcnow(),
         )
         db.add(pending_payment)
@@ -3140,6 +3180,7 @@ def refund_invoice(
 
 @router.get("/payments/settings", tags=["Payments"])
 def get_payment_settings(
+    branch_id: Optional[str] = Query(None),
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
@@ -3147,16 +3188,29 @@ def get_payment_settings(
     Returns current salon payment settings.
     Accessible to all authenticated staff (managers & receptionists).
     Receptionists can view salon UPI and cash configuration for checkout.
+    If branchId is provided, also returns branch-specific UPI override info.
     """
     _, salon = context
+    # Resolve branch if provided
+    _settings_branch = None
+    if branch_id:
+        _settings_branch = db.query(BranchModel).filter(
+            BranchModel.id == branch_id,
+            BranchModel.salon_id == salon.id
+        ).first()
+    eff_vpa, eff_payee = _resolve_upi(_settings_branch, salon)
     return {
         "salonId": salon.id,
         "salonName": salon.name,
         "cashEnabled": salon.cash_enabled if salon.cash_enabled is not None else True,
-        "upiEnabled": bool(salon.upi_enabled and salon.upi_id),
-        "isUpiConfigured": bool(salon.upi_id and salon.upi_id.strip()),
-        "upiId": salon.upi_id or "",
-        "upiPayeeName": salon.upi_payee_name or salon.name,
+        "upiEnabled": bool(eff_vpa),
+        "isUpiConfigured": bool(eff_vpa),
+        "upiId": eff_vpa,
+        "upiPayeeName": eff_payee,
+        "salonUpiId": salon.upi_id or "",
+        "salonUpiPayeeName": salon.upi_payee_name or salon.name,
+        "branchUpiId": _settings_branch.upi_id or "" if _settings_branch else "",
+        "branchUpiPayeeName": _settings_branch.upi_payee_name or "" if _settings_branch else "",
         "paymentInstructions": salon.payment_instructions or "",
         "bankAccountName": salon.bank_account_name or "",
         "bankAccountNumber": salon.bank_account_number or "",
@@ -3172,12 +3226,64 @@ def update_payment_settings(
     db: Session = Depends(get_db)
 ):
     """
-    Manager-only endpoint to configure salon direct payment destination.
+    Manager-only endpoint to configure salon (or branch) direct payment destination.
+    If payload contains 'branchId', updates that branch's UPI fields instead of the salon.
     Validates UPI VPA format, toggles Cash and UPI availability.
     Strictly tenant-isolated. Receptionists are rejected with 403 Forbidden.
     """
     _, salon = context
 
+    # Branch-scoped UPI update
+    _target_branch_id = str(payload.get("branchId") or "").strip()
+    _target_branch = None
+    if _target_branch_id:
+        _target_branch = db.query(BranchModel).filter(
+            BranchModel.id == _target_branch_id,
+            BranchModel.salon_id == salon.id
+        ).first()
+        if not _target_branch:
+            raise HTTPException(status_code=404, detail="Branch not found or does not belong to this salon.")
+
+    if _target_branch:
+        # Update branch UPI only
+        if "upiId" in payload:
+            raw_upi = (payload.get("upiId") or "").strip()
+            if raw_upi:
+                if not UPI_VPA_REGEX.match(raw_upi):
+                    raise HTTPException(status_code=422, detail="Invalid UPI ID format for branch. Use format username@bank.")
+                _target_branch.upi_id = raw_upi
+                _target_branch.upi_enabled = True
+            else:
+                _target_branch.upi_id = None
+                _target_branch.upi_enabled = False
+        if "upiPayeeName" in payload:
+            _target_branch.upi_payee_name = (payload.get("upiPayeeName") or "").strip() or None
+        if "upiEnabled" in payload:
+            want_upi = bool(payload["upiEnabled"])
+            if want_upi and not _target_branch.upi_id:
+                raise HTTPException(status_code=400, detail="Cannot enable UPI for branch without a valid UPI ID.")
+            _target_branch.upi_enabled = want_upi
+        db.commit()
+        db.refresh(_target_branch)
+        db.refresh(salon)
+        eff_vpa, eff_payee = _resolve_upi(_target_branch, salon)
+        return {
+            "success": True,
+            "message": f"Branch '{_target_branch.name}' UPI settings updated.",
+            "settings": {
+                "branchId": _target_branch.id,
+                "branchName": _target_branch.name,
+                "upiId": eff_vpa,
+                "upiPayeeName": eff_payee,
+                "branchUpiId": _target_branch.upi_id or "",
+                "branchUpiPayeeName": _target_branch.upi_payee_name or "",
+                "upiEnabled": bool(_target_branch.upi_enabled and _target_branch.upi_id),
+                "salonUpiId": salon.upi_id or "",
+                "salonUpiPayeeName": salon.upi_payee_name or salon.name,
+            }
+        }
+
+    # Salon-level update (existing behavior unchanged)
     if "cashEnabled" in payload:
         salon.cash_enabled = bool(payload["cashEnabled"])
 
@@ -3250,11 +3356,19 @@ def generate_upi_qr(
     """
     Generates dynamic UPI QR code data and intent URI for salon customer counter scan.
     Recalculates or validates invoice totals server-side.
-    Requires that salon UPI is active and configured.
+    Supports per-branch UPI: pass branchId in payload to use branch UPI (falls back to salon UPI).
     """
     _, salon = context
 
-    if not salon.upi_enabled or not salon.upi_id:
+    # Resolve branch UPI if branchId provided
+    _qr_branch_id = str(payload.get("branchId") or "").strip()
+    _qr_branch = db.query(BranchModel).filter(
+        BranchModel.id == _qr_branch_id,
+        BranchModel.salon_id == salon.id
+    ).first() if _qr_branch_id else None
+    payee_vpa, payee_name = _resolve_upi(_qr_branch, salon)
+
+    if not payee_vpa:
         raise HTTPException(
             status_code=400,
             detail="UPI payments are currently disabled or not configured for this salon. Please select Cash or configure UPI in Salon Settings."
@@ -3288,8 +3402,8 @@ def generate_upi_qr(
     if amount <= 0:
         raise HTTPException(status_code=400, detail="Payable amount must be greater than zero.")
 
-    payee_vpa = salon.upi_id.strip()
-    payee_name = salon.upi_payee_name or salon.name
+    payee_vpa = payee_vpa  # already resolved via _resolve_upi above
+    payee_name = payee_name  # already resolved via _resolve_upi above
     txn_ref = f"RVX-{invoice_number or uuid.uuid4().hex[:8].upper()}"
     note = f"Invoice {invoice_number or 'POS'}"
 
@@ -3355,6 +3469,13 @@ def confirm_invoice_payment(
     raw_method = str(payload.get("paymentMethod") or invoice.payment_method or "CASH").upper()
     payment_method = "CASH" if "CASH" in raw_method else ("UPI" if "UPI" in raw_method else raw_method)
 
+    # Resolve effective UPI for the invoice's branch
+    _confirm_branch = db.query(BranchModel).filter(
+        BranchModel.id == invoice.branch_id,
+        BranchModel.salon_id == salon.id
+    ).first() if invoice.branch_id else None
+    conf_upi_vpa, conf_upi_payee = _resolve_upi(_confirm_branch, salon)
+
     amount_received = invoice.grand_total
     change_given = 0.0
 
@@ -3381,7 +3502,7 @@ def confirm_invoice_payment(
         verification_method = "manual_cash_counter"
 
     elif payment_method == "UPI":
-        if not salon.upi_enabled or not salon.upi_id:
+        if not conf_upi_vpa:
             raise HTTPException(
                 status_code=400,
                 detail="UPI payment is currently disabled or not configured for this salon. Please select Cash or configure UPI in Salon Settings."
@@ -3429,9 +3550,9 @@ def confirm_invoice_payment(
         verified_by_name=user.name if user else "Front Desk Staff",
         amount_received=amount_received,
         change_given=change_given,
-        upi_vpa_snapshot=salon.upi_id if payment_method == "UPI" else None,
-        upi_payee_name_snapshot=salon.upi_payee_name or salon.name if payment_method == "UPI" else None,
-        upi_uri_snapshot=generate_upi_payment_uri(salon.upi_id, salon.upi_payee_name or salon.name, invoice.grand_total, invoice.invoice_number) if payment_method == "UPI" and salon.upi_id else None,
+        upi_vpa_snapshot=conf_upi_vpa if payment_method == "UPI" else None,
+        upi_payee_name_snapshot=conf_upi_payee if payment_method == "UPI" else None,
+        upi_uri_snapshot=generate_upi_payment_uri(conf_upi_vpa, conf_upi_payee, invoice.grand_total, invoice.invoice_number) if payment_method == "UPI" and conf_upi_vpa else None,
         notes=payload.get("notes") or invoice.notes or "",
         audit_metadata_json=json.dumps({
             "confirmed_by_role": user.role if user else "STAFF",

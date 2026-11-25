@@ -253,6 +253,10 @@ class BranchModel(Base):
     chairs = Column(Integer, default=6)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Per-branch UPI (overrides salon-level when set)
+    upi_id = Column(String(128), nullable=True)
+    upi_payee_name = Column(String(128), nullable=True)
+    upi_enabled = Column(Boolean, default=False)
 
     def to_dict(self):
         return {
@@ -267,6 +271,9 @@ class BranchModel(Base):
             "chairs": self.chairs,
             "isActive": self.is_active,
             "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "upiId": self.upi_id or "",
+            "upiPayeeName": self.upi_payee_name or "",
+            "upiEnabled": bool(self.upi_enabled and self.upi_id),
         }
 
 class CustomerModel(Base):
