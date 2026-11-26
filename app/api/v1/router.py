@@ -2018,8 +2018,14 @@ def delete_customer(
 # ============================================================================
 @router.post("/public/system/wipe-all-data", tags=["SystemAdmin"])
 @router.post("/public/salons/purge-decommissioned", tags=["SystemAdmin"])
-def wipe_all_data_endpoint(db: Session = Depends(get_db)):
-    """Permanently purges ALL accounts, salons, branches, appointments, services, customers, staff, invoices, and operational data."""
+def wipe_all_data_endpoint(
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+    db: Session = Depends(get_db)
+):
+    """Master-Admin only: Permanently purges ALL accounts, salons, branches, appointments, services, customers, staff, invoices, and operational data."""
+    user, _ = context
+    if not is_master_admin_user(user):
+        raise HTTPException(status_code=403, detail="Master Admin authorization required.")
     try:
         from app.core.seed import wipe_all_data
         counts = wipe_all_data(db)
@@ -2030,39 +2036,43 @@ def wipe_all_data_endpoint(db: Session = Depends(get_db)):
 
 
 @router.post("/public/system/remove-services", tags=["SystemAdmin"])
-def remove_services_endpoint(payload: Optional[Dict[str, Any]] = Body(default={}), db: Session = Depends(get_db)):
+def remove_services_endpoint(
+    payload: Optional[Dict[str, Any]] = Body(default={}),
+    context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
+    db: Session = Depends(get_db)
+):
     """
-    Removes existing services and/or the 125 legacy services for a specified account (e.g. outlookgood9@gmail.com)
-    or across all salons in the database.
+    Master-Admin only: Removes existing services for a specified account email
+    or legacy 'srv_olg_' demo services. Never wipes all salons unless clean_all=True explicitly.
     """
+    user, _ = context
+    if not is_master_admin_user(user):
+        raise HTTPException(status_code=403, detail="Master Admin authorization required.")
     try:
-        target_email = (payload.get("email") or "outlookgood9@gmail.com").strip().lower()
+        target_email = (payload.get("email") or "").strip().lower()
         salon_ids = set()
 
-        # 1. Match users
-        users = db.query(UserModel).filter(UserModel.email.ilike(f"%{target_email}%")).all()
-        for u in users:
-            if u.salon_id:
-                salon_ids.add(u.salon_id)
-
-        # 2. Match salons
-        salons = db.query(SalonModel).filter(SalonModel.email.ilike(f"%{target_email}%")).all()
-        for s in salons:
-            salon_ids.add(s.id)
+        if target_email:
+            users = db.query(UserModel).filter(UserModel.email.ilike(f"%{target_email}%")).all()
+            for u in users:
+                if u.salon_id:
+                    salon_ids.add(u.salon_id)
+            salons = db.query(SalonModel).filter(SalonModel.email.ilike(f"%{target_email}%")).all()
+            for s in salons:
+                salon_ids.add(s.id)
 
         deleted_count = 0
 
-        # 3. If target salons found, delete their services
         if salon_ids:
             cnt1 = db.query(ServiceModel).filter(ServiceModel.salon_id.in_(list(salon_ids))).delete(synchronize_session=False)
             deleted_count += cnt1
 
-        # 4. Remove all legacy 125 services (ids starting with 'srv_olg_')
+        # Remove legacy 125 services (ids starting with 'srv_olg_')
         cnt2 = db.query(ServiceModel).filter(ServiceModel.id.like("srv_olg_%")).delete(synchronize_session=False)
         deleted_count += cnt2
 
-        # 5. If clean_all is requested or if targeting outlookgood9 / demo services, wipe all existing services
-        if payload.get("clean_all") is not False:
+        # Only wipe all services if explicitly requested with clean_all=True
+        if payload.get("clean_all") is True:
             cnt3 = db.query(ServiceModel).delete(synchronize_session=False)
             deleted_count += cnt3
 
