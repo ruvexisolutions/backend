@@ -287,45 +287,22 @@ def ensure_schema_compatibility():
     except Exception as e:
         print(f"[Schema Migration Notice] {e}")
 
-def seed_outlookgood9_catalog_if_empty():
-    """Seeds the 125 OLG_CATALOG services strictly for outlookgood9@gmail.com if its salon currently has 0 services."""
+def run_one_time_fresh_launch_wipe():
+    """Runs wipe_all_data() strictly once using a persistent system_migrations flag."""
     db = SessionLocal()
     try:
-        from app.core.models import UserModel, SalonModel, ServiceModel
-        from app.core.olg_catalog import OLG_CATALOG
-
-        target_email = "outlookgood9@gmail.com"
-        salon_ids = set()
-        for u in db.query(UserModel).filter(UserModel.email.ilike(target_email)).all():
-            if u.salon_id:
-                salon_ids.add(u.salon_id)
-        for s in db.query(SalonModel).filter(SalonModel.email.ilike(target_email)).all():
-            salon_ids.add(s.id)
-
-        for sid in salon_ids:
-            existing_count = db.query(ServiceModel).filter(ServiceModel.salon_id == sid).count()
-            if existing_count == 0:
-                for item in OLG_CATALOG:
-                    svc_id = f"{item['id']}_{sid[-6:]}"
-                    if not db.query(ServiceModel).filter(ServiceModel.id == svc_id).first():
-                        db.add(ServiceModel(
-                            id=svc_id,
-                            salon_id=sid,
-                            category=item.get("category", "Hair"),
-                            name=item["name"],
-                            duration_minutes=int(item.get("duration_minutes") or 30),
-                            buffer_minutes=int(item.get("buffer_minutes") or 5),
-                            price=float(item.get("price") or 0.0),
-                            description=item.get("description", ""),
-                            is_online_bookable=bool(item.get("is_online_bookable", True)),
-                            is_active=bool(item.get("is_active", True)),
-                            popular=bool(item.get("popular", False)),
-                        ))
-                db.commit()
-                print(f"[OLG Catalog Seed] Seeded {len(OLG_CATALOG)} services for {target_email} (salon {sid})")
+        from app.core.seed import wipe_all_data
+        with engine.begin() as conn:
+            conn.execute(text("CREATE TABLE IF NOT EXISTS system_migrations (key VARCHAR(128) PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"))
+            existing = conn.execute(text("SELECT 1 FROM system_migrations WHERE key = 'fresh_launch_wipe_2026_11_28'")).fetchone()
+        if not existing:
+            counts = wipe_all_data(db)
+            with engine.begin() as conn:
+                conn.execute(text("INSERT INTO system_migrations (key) VALUES ('fresh_launch_wipe_2026_11_28')"))
+            print(f"[Fresh Launch Wipe] Executed once cleanly: {counts}")
     except Exception as e:
         db.rollback()
-        print(f"[OLG Catalog Seed Notice] {e}")
+        print(f"[Fresh Launch Wipe Notice] {e}")
     finally:
         db.close()
 
@@ -335,7 +312,7 @@ async def lifespan(app: FastAPI):
     # Startup: Ensure tables exist
     Base.metadata.create_all(bind=engine)
     ensure_schema_compatibility()
-    seed_outlookgood9_catalog_if_empty()
+    run_one_time_fresh_launch_wipe()
     yield
     # Shutdown logic if any
 
