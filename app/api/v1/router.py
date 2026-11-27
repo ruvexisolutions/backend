@@ -685,19 +685,30 @@ def forgot_password(payload: Dict[str, Any] = Body(...), db: Session = Depends(g
         raise HTTPException(status_code=400, detail="Work email address is required")
 
     user = db.query(UserModel).filter(UserModel.email.ilike(email)).first()
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="No account found for this email. Please create an account first (Sign Up or Continue with Google)."
+        )
+
+    reset_token = create_access_token(
+        {"sub": user.id, "email": user.email, "purpose": "password_reset"},
+        expires_delta=timedelta(hours=1),
+    )
+    email_res = send_password_reset_email(user.email, user.name, reset_token)
+    if not email_res.get("sent"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not send password reset email: {email_res.get('error') or 'Email service unavailable'}"
+        )
+
     response = {
         "success": True,
-        "message": "If an account exists for that email, a password reset link has been dispatched.",
+        "message": f"Password reset link sent to {user.email}. Please check your inbox.",
     }
-    if user:
-        reset_token = create_access_token(
-            {"sub": user.id, "email": user.email, "purpose": "password_reset"},
-            expires_delta=timedelta(hours=1),
-        )
-        send_password_reset_email(user.email, user.name, reset_token)
-        # Security: Never return reset tokens in production HTTP payloads
-        if os.getenv("ALLOW_DEV_RESET_TOKEN", "").lower() == "true":
-            response["reset_token"] = reset_token
+    # Security: Never return reset tokens in production HTTP payloads
+    if os.getenv("ALLOW_DEV_RESET_TOKEN", "").lower() == "true":
+        response["reset_token"] = reset_token
     return response
 
 
@@ -772,12 +783,16 @@ def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depen
     if latest_otp and (datetime.utcnow() - latest_otp.created_at).total_seconds() < 30:
         raise HTTPException(status_code=429, detail="Please wait 30 seconds before requesting a new code.")
 
-    # Security: neutral response if account not found
+    # Explicit error if account does not exist yet
     if not user:
-        return {
-            "success": True,
-            "message": f"If this {'email' if is_email else 'phone number'} is associated with an active account, an OTP code has been dispatched."
-        }
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No account found for this email. Please create an account first (Sign Up or Continue with Google)."
+                if is_email
+                else "No account found for this mobile number. Please create an account first or sign in with your registered email."
+            ),
+        )
 
     # Generate cryptographically secure 6-digit code
     otp_code = f"{secrets.randbelow(900000) + 100000}"
@@ -793,7 +808,17 @@ def request_manager_otp(payload: Dict[str, Any] = Body(...), db: Session = Depen
     db.commit()
 
     if user.email:
-        send_otp_email(user.email, user.name, otp_code)
+        email_res = send_otp_email(user.email, user.name, otp_code)
+        if not email_res.get("sent"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not deliver OTP email: {email_res.get('error') or 'Email service unavailable'}"
+            )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="This account has no email address linked for OTP delivery. Please sign in with password or Google."
+        )
 
     response_payload = {
         "success": True,
