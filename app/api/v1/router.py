@@ -1323,7 +1323,7 @@ def accept_receptionist_invitation(payload: Dict[str, Any] = Body(...), db: Sess
             role="Salon Receptionist",
             commission_rate=0.0,
             is_clocked_in=True,
-            clocked_in_at=datetime.utcnow().strftime("%I:%M %p"),
+            clocked_in_at=(datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M %p"),
             avatar=name[0].upper(),
             specialties_json=json.dumps(["Front Desk POS", "Guest Management"]),
             status="clocked_in"
@@ -2236,13 +2236,14 @@ def create_staff(
     new_staff = StaffModel(
         id=f"stf_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
+        branch_id=(str(data.get("branchId") or data.get("branch_id") or "").strip() or None),
         name=data.get("name", "New Stylist"),
         phone=data.get("phone", ""),
         email=data.get("email", ""),
         role=data.get("role", "Stylist"),
         commission_rate=float(data.get("commissionRate") or 15.0),
         is_clocked_in=bool(data.get("isClockedIn", True)),
-        clocked_in_at=datetime.utcnow().strftime("%I:%M %p"),
+        clocked_in_at=(datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M %p"),
         avatar=data.get("avatar") or "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80",
         specialties_json=json.dumps(specialties),
         status="clocked_in",
@@ -2313,7 +2314,7 @@ def toggle_clock(
     next_state = not member.is_clocked_in
     member.is_clocked_in = next_state
     member.status = "clocked_in" if next_state else "clocked_out"
-    member.clocked_in_at = datetime.utcnow().strftime("%I:%M %p") if next_state else ""
+    member.clocked_in_at = (datetime.utcnow() + timedelta(hours=5, minutes=30)).strftime("%I:%M %p") if next_state else ""
 
     db.commit()
     db.refresh(member)
