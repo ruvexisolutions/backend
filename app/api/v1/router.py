@@ -266,22 +266,7 @@ def get_current_user_and_salon(
                 db.rollback()
         return user, salon
 
-    # Server-side 7-day trial expiry lock
-    if salon.subscription_status == "trial" and not salon.is_trial_active():
-        allowed_paths = [
-            "/api/v1/subscription/status",
-            "/api/v1/subscription/create-order",
-            "/api/v1/subscription/verify-payment",
-            "/api/v1/auth/me",
-            "/api/v1/salon",
-        ]
-        curr_path = request.url.path
-        if not any(curr_path.endswith(p) or curr_path == p for p in allowed_paths):
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail="Your 7-day free trial has expired. Please upgrade your subscription to unlock full salon access."
-            )
-
+    # Subscription / 7-day trial lock disabled for now (all workspaces unlocked)
     return user, salon
 
 def require_salon_manager(
@@ -1383,10 +1368,10 @@ def get_subscription_status(
             "receptionist_pos": True,
             "appointments": True,
             "customer_crm": True,
-            "branch_management": salon.subscription_status == "active",
-            "gst_tax_configuration": salon.subscription_status == "active",
-            "whatsapp_custom_integration": salon.subscription_status == "active",
-            "advanced_financial_reports": salon.subscription_status == "active",
+            "branch_management": True,
+            "gst_tax_configuration": True,
+            "whatsapp_custom_integration": True,
+            "advanced_financial_reports": True,
         }
     }
 
@@ -4011,6 +3996,50 @@ def get_reports_summary(
     net_profit = round(net_revenue - total_expenses, 2)
     avg_ticket = round(gross_revenue / max(1, len(paid_invoices)), 2)
 
+    # Real Growth % (current window vs prior equal-length window)
+    all_paid = [i for i in all_invoices if (i.status or "").lower() == "paid"]
+    prev_revenue = 0.0
+    if cutoff:
+        window_delta = (now - cutoff) if range_key != "today" else timedelta(days=1)
+        prev_start = cutoff - window_delta
+        for inv in all_paid:
+            dt = parse_iso_dt(inv.paid_at or inv.created_at)
+            if dt and prev_start <= dt < cutoff:
+                prev_revenue += float(inv.grand_total or 0.0)
+    if prev_revenue > 0:
+        growth_pct = round(((gross_revenue - prev_revenue) / prev_revenue) * 100.0, 1)
+    elif gross_revenue > 0:
+        growth_pct = 100.0
+    else:
+        growth_pct = 0.0
+
+    # Real Revenue Trend Series for Charts
+    revenue_trend = []
+    if range_key == "today":
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        buckets = [0.0] * 6  # 4-hour buckets: 0-4, 4-8, 8-12, 12-16, 16-20, 20-24
+        labels = ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"]
+        for inv in paid_invoices:
+            dt = parse_iso_dt(inv.paid_at or inv.created_at)
+            if dt and dt >= day_start:
+                idx = min(5, max(0, dt.hour // 4))
+                buckets[idx] += float(inv.grand_total or 0.0)
+        revenue_trend = [{"label": labels[i], "amount": round(buckets[i], 2)} for i in range(6)]
+    else:
+        days_count = 7 if range_key == "week" else 14
+        step_days = 1 if range_key == "week" else 2
+        today_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date_win = today_date - timedelta(days=days_count * step_days - step_days)
+        for idx in range(days_count):
+            b_start = start_date_win + timedelta(days=idx * step_days)
+            b_end = b_start + timedelta(days=step_days)
+            amt = 0.0
+            for inv in paid_invoices:
+                dt = parse_iso_dt(inv.paid_at or inv.created_at)
+                if dt and b_start <= dt < b_end:
+                    amt += float(inv.grand_total or 0.0)
+            revenue_trend.append({"label": b_start.strftime("%d %b"), "amount": round(amt, 2)})
+
     return {
         "range": range_key,
         "metrics": {
@@ -4031,7 +4060,9 @@ def get_reports_summary(
             "appointmentsCount": len(appts_in_range),
             "averageTicketSize": avg_ticket,
             "repeatClientPercentage": repeat_pct,
+            "growthPercentage": growth_pct,
         },
+        "revenueTrend": revenue_trend,
         "paymentBreakdown": payment_breakdown,
         "categoryBreakdown": {
             "serviceRevenue": round(service_revenue, 2),
