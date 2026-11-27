@@ -606,7 +606,7 @@ def signup(payload: Dict[str, Any] = Body(...), db: Session = Depends(get_db)):
         category=salon_data.get("category") or "Hair & Beauty Atelier",
         gstin=salon_data.get("gstin") or "",
         auto_gst=False,
-        phone=phone or "+91 98000 00000",
+        phone=phone or "",
         email=email,
         trial_started_at=now,
         trial_ends_at=trial_end,
@@ -1564,6 +1564,24 @@ def update_salon(
     if "bankName" in data:
         salon.bank_name = data["bankName"]
 
+    # Keep the salon's primary/main branch in sync with onboarding & salon profile updates
+    main_branch = db.query(BranchModel).filter(
+        BranchModel.salon_id == salon.id
+    ).order_by(BranchModel.created_at.asc()).first()
+    if main_branch:
+        if "branch" in data and str(data["branch"] or "").strip():
+            main_branch.name = str(data["branch"]).strip()
+        if "city" in data:
+            main_branch.city = str(data["city"] or "").strip()
+        if "address" in data:
+            main_branch.address = str(data["address"] or "").strip()
+        if "phone" in data:
+            main_branch.phone = str(data["phone"] or "").strip()
+        if "email" in data:
+            main_branch.email = str(data["email"] or "").strip()
+        if "chairs" in data:
+            main_branch.chairs = int(data["chairs"])
+
     db.commit()
     db.refresh(salon)
     return salon.to_dict()
@@ -1610,12 +1628,12 @@ def get_branches(
     if not branches:
         default_branch = BranchModel(
             salon_id=salon.id,
-            name=salon.branch or "Flagship Studio",
-            address=salon.address or "Indiranagar",
-            city=salon.city or "Bengaluru",
+            name=salon.branch or "Main Branch",
+            address=salon.address or "",
+            city=salon.city or "",
             phone=salon.phone or "",
             email=salon.email or "",
-            chairs=salon.chairs or 8,
+            chairs=salon.chairs or 6,
             is_active=True
         )
         db.add(default_branch)
