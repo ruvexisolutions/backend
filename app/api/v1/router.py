@@ -3920,7 +3920,7 @@ def create_feedback(
 # ============================================================================
 @router.get("/reports/summary", tags=["Reports"])
 def get_reports_summary(
-    range: Optional[str] = "month",
+    range_filter: Optional[str] = Query("month", alias="range"),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     branch_id: Optional[str] = None,
@@ -3945,7 +3945,7 @@ def get_reports_summary(
         appointments = [a for a in appointments if not a.branch_id or a.branch_id == branch_id]
 
     now = datetime.utcnow()
-    range_key = str(range or "month").lower()
+    range_key = str(range_filter or "month").lower()
     if range_key == "today":
         cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0)
     elif range_key == "week":
