@@ -324,8 +324,11 @@ def seed_outlookgood9_catalog_if_empty():
             salon_ids.add(s.id)
 
         for sid in salon_ids:
-            existing_count = db.query(ServiceModel).filter(ServiceModel.salon_id == sid).count()
-            if existing_count == 0:
+            existing_olg_count = db.query(ServiceModel).filter(
+                ServiceModel.salon_id == sid,
+                ServiceModel.id.like("srv_olg_%"),
+            ).count()
+            if existing_olg_count == 0:
                 for item in OLG_CATALOG:
                     svc_id = f"{item['id']}_{sid[-6:]}"
                     if not db.query(ServiceModel).filter(ServiceModel.id == svc_id).first():

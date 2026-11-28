@@ -349,8 +349,11 @@ def get_bootstrap_data(
         (user and (user.email or "").strip().lower() == "outlookgood9@gmail.com")
         or (salon and (salon.email or "").strip().lower() == "outlookgood9@gmail.com")
     ):
-        existing_srv_count = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).count()
-        if existing_srv_count == 0:
+        existing_olg_count = db.query(ServiceModel).filter(
+            ServiceModel.salon_id == salon_id,
+            ServiceModel.id.like("srv_olg_%"),
+        ).count()
+        if existing_olg_count == 0:
             try:
                 from app.core.olg_catalog import OLG_CATALOG
                 for item in OLG_CATALOG:
