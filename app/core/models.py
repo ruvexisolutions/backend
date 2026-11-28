@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    Index,
 )
 from .database import Base
 
@@ -304,6 +305,9 @@ class CustomerModel(Base):
     allergies = Column(String(255), default="None Reported")
     wallet_balance = Column(Float, default=0.0) # Prepaid customer wallet credit balance
     rebooking_cadence_days = Column(Integer, default=28)
+    whatsapp_opt_in = Column(Boolean, default=True)
+    whatsapp_marketing_opt_in = Column(Boolean, default=True)
+    whatsapp_last_inbound_at = Column(DateTime, nullable=True)
     created_at = Column(String(64), default=lambda: datetime.utcnow().isoformat())
 
     def to_dict(self):
@@ -338,6 +342,9 @@ class CustomerModel(Base):
             "patchTestDate": self.patch_test_date,
             "allergies": self.allergies,
             "rebookingCadenceDays": self.rebooking_cadence_days,
+            "whatsappOptIn": True if self.whatsapp_opt_in is None else bool(self.whatsapp_opt_in),
+            "whatsappMarketingOptIn": True if self.whatsapp_marketing_opt_in is None else bool(self.whatsapp_marketing_opt_in),
+            "whatsappLastInboundAt": self.whatsapp_last_inbound_at.isoformat() if self.whatsapp_last_inbound_at else None,
             "createdAt": self.created_at,
         }
 
@@ -898,4 +905,227 @@ class PaymentModel(Base):
             "createdAt": self.created_at.isoformat() if self.created_at else None,
             "confirmedAt": self.confirmed_at.isoformat() if self.confirmed_at else None,
         }
+
+
+# ============================================================================
+# Dual WhatsApp Business API Models (RUVEXI Official + Per-Salon Tenant)
+# ============================================================================
+
+class WhatsAppConnectionModel(Base):
+    """Per-tenant Meta WhatsApp Business Cloud API connection (never stores RUVEXI official creds)."""
+    __tablename__ = "whatsapp_connections"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"waconn_{uuid.uuid4().hex[:12]}")
+    tenant_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    waba_id = Column(String(128), nullable=True, index=True)
+    phone_number_id = Column(String(128), nullable=True, index=True)
+    display_phone_number = Column(String(32), nullable=True)
+    verified_name = Column(String(128), nullable=True)
+    quality_rating = Column(String(32), default="GREEN")
+    encrypted_access_token = Column(Text, nullable=True)
+    connection_status = Column(String(32), default="not_connected")  # not_connected, connected, expired, error, disconnected
+    connected_at = Column(DateTime, nullable=True)
+    token_expiry = Column(DateTime, nullable=True)
+    token_validation_status = Column(String(32), default="unverified")  # valid, expired, invalid, unverified
+    webhook_subscription_status = Column(String(32), default="not_subscribed")  # subscribed, not_subscribed, failed
+    last_verified_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        from .security import decrypt_secret
+        raw = decrypt_secret(self.encrypted_access_token) if self.encrypted_access_token else ""
+        masked = None
+        if raw:
+            masked = "••••••••" if len(raw) <= 10 else f"{raw[:4]}••••••••{raw[-4:]}"
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "wabaId": self.waba_id,
+            "phoneNumberId": self.phone_number_id,
+            "displayPhoneNumber": self.display_phone_number,
+            "verifiedName": self.verified_name,
+            "qualityRating": self.quality_rating or "GREEN",
+            "maskedToken": masked,
+            "connectionStatus": self.connection_status or "not_connected",
+            "connectedAt": self.connected_at.isoformat() if self.connected_at else None,
+            "tokenExpiry": self.token_expiry.isoformat() if self.token_expiry else None,
+            "tokenValidationStatus": self.token_validation_status or "unverified",
+            "webhookSubscriptionStatus": self.webhook_subscription_status or "not_subscribed",
+            "lastVerifiedAt": self.last_verified_at.isoformat() if self.last_verified_at else None,
+            "errorMessage": self.error_message,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class WhatsAppMessageLogModel(Base):
+    """Unified delivery & retry queue log strictly partitioned by channel_type ('RUVEXI' vs 'SALON')."""
+    __tablename__ = "whatsapp_message_logs"
+    __table_args__ = (
+        Index("ix_wml_tenant_channel", "tenant_id", "channel_type"),
+        Index("ix_wml_retry_queue", "delivery_status", "next_retry_at"),
+    )
+
+    id = Column(String(64), primary_key=True, default=lambda: f"wlog_{uuid.uuid4().hex[:12]}")
+    tenant_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=True, index=True)
+    channel_type = Column(String(16), nullable=False, index=True)  # 'RUVEXI' or 'SALON'
+    recipient_number = Column(String(32), nullable=False, index=True)
+    customer_name = Column(String(128), nullable=True)
+    message_type = Column(String(64), nullable=False, index=True)  # e.g. OWNER_REPORT, BOOKING_CONFIRMATION, etc.
+    template_name = Column(String(128), nullable=True)
+    meta_message_id = Column(String(128), nullable=True, index=True)
+    delivery_status = Column(String(32), default="queued", index=True)  # queued, sent, delivered, read, failed, dead_letter
+    failure_reason = Column(Text, nullable=True)
+    idempotency_key = Column(String(160), nullable=True, unique=True, index=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=3)
+    next_retry_at = Column(DateTime, nullable=True)
+    payload_json = Column(Text, default="{}")
+    sent_at = Column(DateTime, nullable=True)
+    delivered_at = Column(DateTime, nullable=True)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "channelType": self.channel_type,
+            "recipientNumber": self.recipient_number,
+            "customerName": self.customer_name,
+            "messageType": self.message_type,
+            "templateName": self.template_name,
+            "metaMessageId": self.meta_message_id,
+            "deliveryStatus": self.delivery_status,
+            "failureReason": self.failure_reason,
+            "idempotencyKey": self.idempotency_key,
+            "retryCount": self.retry_count or 0,
+            "maxRetries": self.max_retries or 3,
+            "nextRetryAt": self.next_retry_at.isoformat() if self.next_retry_at else None,
+            "sentAt": self.sent_at.isoformat() if self.sent_at else None,
+            "deliveredAt": self.delivered_at.isoformat() if self.delivered_at else None,
+            "readAt": self.read_at.isoformat() if self.read_at else None,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class WhatsAppNotificationPreferenceModel(Base):
+    """Independent notification preferences for Salon Owners (RUVEXI channel) & Salon Customers (SALON channel)."""
+    __tablename__ = "whatsapp_notification_preferences"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "channel_type", "notification_type", "recipient_phone", name="uq_wnp_tenant_ch_type_phone"),
+    )
+
+    id = Column(String(64), primary_key=True, default=lambda: f"wnp_{uuid.uuid4().hex[:12]}")
+    tenant_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=False, index=True)
+    owner_id = Column(String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    channel_type = Column(String(16), default="RUVEXI")  # 'RUVEXI' (owner insights) or 'SALON' (customer automation)
+    recipient_phone = Column(String(32), default="")  # Empty string = default/primary owner or global salon rule
+    notification_type = Column(String(64), nullable=False)  # daily_report, weekly_report, monthly_report, revenue_alert, low_stock_alert, subscription_alert, booking_confirmation, etc.
+    is_enabled = Column(Boolean, default=True)
+    delivery_frequency = Column(String(32), default="daily")  # realtime, daily, weekly, monthly
+    preferred_delivery_time = Column(String(16), default="09:00")  # HH:MM (IST)
+    opted_in = Column(Boolean, default=True)
+    last_dispatched_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "ownerId": self.owner_id,
+            "channelType": self.channel_type,
+            "recipientPhone": self.recipient_phone,
+            "notificationType": self.notification_type,
+            "isEnabled": bool(self.is_enabled),
+            "deliveryFrequency": self.delivery_frequency,
+            "preferredDeliveryTime": self.preferred_delivery_time,
+            "optedIn": bool(self.opted_in),
+            "lastDispatchedAt": self.last_dispatched_at.isoformat() if self.last_dispatched_at else None,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class WhatsAppTemplateModel(Base):
+    """Meta WhatsApp template registry for both centrally managed RUVEXI templates and per-salon templates."""
+    __tablename__ = "whatsapp_templates"
+    __table_args__ = (
+        Index("ix_wtpl_tenant_channel", "tenant_id", "channel_type"),
+    )
+
+    id = Column(String(64), primary_key=True, default=lambda: f"wtpl_{uuid.uuid4().hex[:12]}")
+    tenant_id = Column(String(64), ForeignKey("salons.id", ondelete="CASCADE"), nullable=True, index=True)
+    template_name = Column(String(128), nullable=False)
+    language = Column(String(32), default="en_US")
+    category = Column(String(32), default="UTILITY")  # UTILITY, MARKETING, AUTHENTICATION
+    approval_status = Column(String(32), default="PENDING")  # APPROVED, PENDING, REJECTED, PAUSED, SANDBOX_PREVIEW
+    channel_type = Column(String(16), nullable=False, default="SALON")  # 'RUVEXI' or 'SALON'
+    body_preview = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "name": self.template_name,
+            "templateName": self.template_name,
+            "language": self.language,
+            "category": self.category,
+            "status": self.approval_status,
+            "approvalStatus": self.approval_status,
+            "channelType": self.channel_type,
+            "description": self.body_preview,
+            "createdAt": self.created_at.isoformat() if self.created_at else None,
+            "updatedAt": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class WhatsAppWebhookEventModel(Base):
+    """Deduplicated Meta webhook event log mapped strictly to resolved RUVEXI or SALON channel."""
+    __tablename__ = "whatsapp_webhook_events"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"whevt_{uuid.uuid4().hex[:12]}")
+    tenant_id = Column(String(64), ForeignKey("salons.id", ondelete="SET NULL"), nullable=True, index=True)
+    channel_type = Column(String(16), nullable=False, default="UNKNOWN")  # RUVEXI, SALON, UNKNOWN
+    event_id = Column(String(160), nullable=False, unique=True, index=True)
+    event_type = Column(String(64), nullable=False)  # status_update, inbound_message, opt_out, template_status
+    processing_status = Column(String(32), default="received")  # received, processed, ignored, failed
+    raw_payload = Column(Text, default="{}")
+    error_message = Column(Text, nullable=True)
+    received_at = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "tenantId": self.tenant_id,
+            "channelType": self.channel_type,
+            "eventId": self.event_id,
+            "eventType": self.event_type,
+            "processingStatus": self.processing_status,
+            "errorMessage": self.error_message,
+            "receivedAt": self.received_at.isoformat() if self.received_at else None,
+            "processedAt": self.processed_at.isoformat() if self.processed_at else None,
+        }
+
+
+class WhatsAppAuditLogModel(Base):
+    """Security & compliance audit trail for WhatsApp connections, token changes, and channel dispatches."""
+    __tablename__ = "whatsapp_audit_logs"
+
+    id = Column(String(64), primary_key=True, default=lambda: f"waud_{uuid.uuid4().hex[:12]}")
+    tenant_id = Column(String(64), nullable=True, index=True)
+    actor_user_id = Column(String(64), nullable=True)
+    channel_type = Column(String(16), nullable=False)
+    action = Column(String(64), nullable=False)
+    details = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 

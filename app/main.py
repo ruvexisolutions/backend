@@ -6,6 +6,8 @@ from sqlalchemy import inspect, text
 from app.core.database import engine, Base, SessionLocal
 from app.core.seed import seed_database
 from app.api.v1.router import router as api_v1_router
+from app.api.v1.whatsapp_router import whatsapp_router
+from app.services.whatsapp import whatsapp_scheduler
 
 def ensure_schema_compatibility():
     """Idempotently ensures all recently added columns exist across SQLite/PostgreSQL tables."""
@@ -275,6 +277,23 @@ def ensure_schema_compatibility():
             except Exception as e_logo:
                 print(f"[Salons Logo Text Upgrade Notice] {e_logo}")
 
+        # Customers WhatsApp opt-in / service window columns
+        if "customers" in tables:
+            cust_cols = [c["name"] for c in inspector.get_columns("customers")]
+            true_val = "TRUE" if is_postgres else "1"
+            dt_type = "TIMESTAMPTZ" if is_postgres else "DATETIME"
+            with engine.begin() as conn:
+                for col_name, col_type in [
+                    ("whatsapp_opt_in", f"BOOLEAN DEFAULT {true_val}"),
+                    ("whatsapp_marketing_opt_in", f"BOOLEAN DEFAULT {true_val}"),
+                    ("whatsapp_last_inbound_at", dt_type),
+                ]:
+                    if col_name not in cust_cols:
+                        if is_postgres:
+                            conn.execute(text(f"ALTER TABLE customers ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+                        else:
+                            conn.execute(text(f"ALTER TABLE customers ADD COLUMN {col_name} {col_type}"))
+
         # Inventory per-salon SKU uniqueness migration
         if is_postgres and "inventory" in tables:
             try:
@@ -361,8 +380,9 @@ async def lifespan(app: FastAPI):
     ensure_schema_compatibility()
     run_one_time_fresh_launch_wipe()
     seed_outlookgood9_catalog_if_empty()
+    whatsapp_scheduler.start()
     yield
-    # Shutdown logic if any
+    await whatsapp_scheduler.stop()
 
 app = FastAPI(
     title="Ruvexi Solutions Platform API",
@@ -406,6 +426,7 @@ async def add_security_headers(request: Request, call_next):
 
 # Include v1 endpoints
 app.include_router(api_v1_router)
+app.include_router(whatsapp_router)
 
 @app.get("/health", tags=["Health"])
 async def health_check():

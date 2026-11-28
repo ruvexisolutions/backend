@@ -2676,6 +2676,44 @@ def create_appointment(
     db.add(apt)
     db.commit()
     db.refresh(apt)
+
+    # Non-blocking queue of customer booking confirmation via Salon's own WhatsApp connection
+    if apt.customer_phone:
+        try:
+            from app.core.models import WhatsAppConnectionModel, WhatsAppNotificationPreferenceModel
+            from app.services.whatsapp import whatsapp_message_router, MessageCategory
+            conn = db.query(WhatsAppConnectionModel).filter(
+                WhatsAppConnectionModel.tenant_id == salon.id,
+                WhatsAppConnectionModel.connection_status == "connected",
+            ).first()
+            if conn:
+                pref = db.query(WhatsAppNotificationPreferenceModel).filter(
+                    WhatsAppNotificationPreferenceModel.tenant_id == salon.id,
+                    WhatsAppNotificationPreferenceModel.channel_type == "SALON",
+                    WhatsAppNotificationPreferenceModel.notification_type == "BOOKING_CONFIRMATION",
+                ).first()
+                if not pref or pref.is_enabled:
+                    msg_text = (
+                        f"📅 *Booking Confirmed with {salon.name}!*\n\n"
+                        f"Hello {apt.customer_name},\n"
+                        f"• Service: {apt.service_name}\n"
+                        f"• Stylist: {apt.staff_name}\n"
+                        f"• Date & Time: {apt.date} {apt.start_time}"
+                    )
+                    whatsapp_message_router.enqueue_message(
+                        db=db,
+                        tenant_id=salon.id,
+                        category=MessageCategory.BOOKING_CONFIRMATION,
+                        recipient_number=apt.customer_phone,
+                        customer_name=apt.customer_name,
+                        message_text=msg_text,
+                        template_name="ruvexi_appointment_confirmation",
+                        template_params=[apt.customer_name, salon.name, apt.service_name, apt.staff_name, f"{apt.date} {apt.start_time}"],
+                        idempotency_key=f"appt_confirm:{apt.id}",
+                    )
+        except Exception:
+            pass
+
     return apt.to_dict()
 
 
@@ -3163,6 +3201,42 @@ def create_invoice(
 
     db.commit()
     db.refresh(invoice)
+
+    # Non-blocking queue of digital invoice / payment confirmation via Salon's own WhatsApp connection
+    if invoice.status == "paid" and invoice.customer_phone:
+        try:
+            from app.core.models import WhatsAppConnectionModel, WhatsAppNotificationPreferenceModel
+            from app.services.whatsapp import whatsapp_message_router, MessageCategory
+            conn = db.query(WhatsAppConnectionModel).filter(
+                WhatsAppConnectionModel.tenant_id == salon_id,
+                WhatsAppConnectionModel.connection_status == "connected",
+            ).first()
+            if conn:
+                pref = db.query(WhatsAppNotificationPreferenceModel).filter(
+                    WhatsAppNotificationPreferenceModel.tenant_id == salon_id,
+                    WhatsAppNotificationPreferenceModel.channel_type == "SALON",
+                    WhatsAppNotificationPreferenceModel.notification_type == "CUSTOMER_INVOICE",
+                ).first()
+                if not pref or pref.is_enabled:
+                    msg_text = (
+                        f"✨ *Thank you for visiting {salon.name}, {invoice.customer_name}!*\n\n"
+                        f"🧾 Invoice: *#{invoice.invoice_number}*\n"
+                        f"💰 Amount Paid: *₹{float(invoice.grand_total or 0):,.2f}*\n"
+                        f"💳 Method: {invoice.payment_method}"
+                    )
+                    whatsapp_message_router.enqueue_message(
+                        db=db,
+                        tenant_id=salon_id,
+                        category=MessageCategory.CUSTOMER_INVOICE,
+                        recipient_number=invoice.customer_phone,
+                        customer_name=invoice.customer_name,
+                        message_text=msg_text,
+                        template_name="ruvexi_service_receipt",
+                        template_params=[invoice.customer_name, salon.name, invoice.invoice_number, f"₹{float(invoice.grand_total or 0):,.2f}"],
+                        idempotency_key=f"inv_paid:{invoice.id}",
+                    )
+        except Exception:
+            pass
     return invoice.to_dict()
 
 
@@ -3253,6 +3327,42 @@ def refund_invoice(
 
     db.commit()
     db.refresh(invoice)
+
+    # Non-blocking queue of digital invoice / payment confirmation via Salon's own WhatsApp connection
+    if invoice.status == "paid" and invoice.customer_phone:
+        try:
+            from app.core.models import WhatsAppConnectionModel, WhatsAppNotificationPreferenceModel
+            from app.services.whatsapp import whatsapp_message_router, MessageCategory
+            conn = db.query(WhatsAppConnectionModel).filter(
+                WhatsAppConnectionModel.tenant_id == salon_id,
+                WhatsAppConnectionModel.connection_status == "connected",
+            ).first()
+            if conn:
+                pref = db.query(WhatsAppNotificationPreferenceModel).filter(
+                    WhatsAppNotificationPreferenceModel.tenant_id == salon_id,
+                    WhatsAppNotificationPreferenceModel.channel_type == "SALON",
+                    WhatsAppNotificationPreferenceModel.notification_type == "CUSTOMER_INVOICE",
+                ).first()
+                if not pref or pref.is_enabled:
+                    msg_text = (
+                        f"✨ *Thank you for visiting {salon.name}, {invoice.customer_name}!*\n\n"
+                        f"🧾 Invoice: *#{invoice.invoice_number}*\n"
+                        f"💰 Amount Paid: *₹{float(invoice.grand_total or 0):,.2f}*\n"
+                        f"💳 Method: {invoice.payment_method}"
+                    )
+                    whatsapp_message_router.enqueue_message(
+                        db=db,
+                        tenant_id=salon_id,
+                        category=MessageCategory.CUSTOMER_INVOICE,
+                        recipient_number=invoice.customer_phone,
+                        customer_name=invoice.customer_name,
+                        message_text=msg_text,
+                        template_name="ruvexi_service_receipt",
+                        template_params=[invoice.customer_name, salon.name, invoice.invoice_number, f"₹{float(invoice.grand_total or 0):,.2f}"],
+                        idempotency_key=f"inv_paid:{invoice.id}",
+                    )
+        except Exception:
+            pass
     return {
         "success": True,
         "message": f"Invoice {invoice.invoice_number} successfully refunded for â‚¹{refund_amount:,.2f}.",
@@ -3724,6 +3834,42 @@ def confirm_invoice_payment(
 
     db.commit()
     db.refresh(invoice)
+
+    # Non-blocking queue of digital invoice / payment confirmation via Salon's own WhatsApp connection
+    if invoice.status == "paid" and invoice.customer_phone:
+        try:
+            from app.core.models import WhatsAppConnectionModel, WhatsAppNotificationPreferenceModel
+            from app.services.whatsapp import whatsapp_message_router, MessageCategory
+            conn = db.query(WhatsAppConnectionModel).filter(
+                WhatsAppConnectionModel.tenant_id == salon_id,
+                WhatsAppConnectionModel.connection_status == "connected",
+            ).first()
+            if conn:
+                pref = db.query(WhatsAppNotificationPreferenceModel).filter(
+                    WhatsAppNotificationPreferenceModel.tenant_id == salon_id,
+                    WhatsAppNotificationPreferenceModel.channel_type == "SALON",
+                    WhatsAppNotificationPreferenceModel.notification_type == "CUSTOMER_INVOICE",
+                ).first()
+                if not pref or pref.is_enabled:
+                    msg_text = (
+                        f"✨ *Thank you for visiting {salon.name}, {invoice.customer_name}!*\n\n"
+                        f"🧾 Invoice: *#{invoice.invoice_number}*\n"
+                        f"💰 Amount Paid: *₹{float(invoice.grand_total or 0):,.2f}*\n"
+                        f"💳 Method: {invoice.payment_method}"
+                    )
+                    whatsapp_message_router.enqueue_message(
+                        db=db,
+                        tenant_id=salon_id,
+                        category=MessageCategory.CUSTOMER_INVOICE,
+                        recipient_number=invoice.customer_phone,
+                        customer_name=invoice.customer_name,
+                        message_text=msg_text,
+                        template_name="ruvexi_service_receipt",
+                        template_params=[invoice.customer_name, salon.name, invoice.invoice_number, f"₹{float(invoice.grand_total or 0):,.2f}"],
+                        idempotency_key=f"inv_paid:{invoice.id}",
+                    )
+        except Exception:
+            pass
     db.refresh(payment)
 
     # Automated WhatsApp Receipt Dispatch
