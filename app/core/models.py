@@ -360,8 +360,22 @@ class ServiceModel(Base):
     is_active = Column(Boolean, default=True)
     popular = Column(Boolean, default=False)
     image_url = Column(Text, default="")
+    branch_prices_json = Column(Text, default="{}")
 
-    def to_dict(self):
+    def get_branch_prices(self) -> dict:
+        import json
+        raw = self.branch_prices_json or "{}"
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {str(k): float(v) for k, v in parsed.items() if v is not None}
+        except Exception:
+            pass
+        return {}
+
+    def to_dict(self, branch_id: str | None = None):
+        branch_prices = self.get_branch_prices()
+        effective_price = branch_prices.get(branch_id, self.price) if branch_id else self.price
         return {
             "id": self.id,
             "salonId": self.salon_id,
@@ -369,7 +383,9 @@ class ServiceModel(Base):
             "name": self.name,
             "durationMinutes": self.duration_minutes,
             "bufferMinutes": self.buffer_minutes,
-            "price": self.price,
+            "price": effective_price,
+            "basePrice": self.price,
+            "branchPrices": branch_prices,
             "description": self.description,
             "materialUsed": self.material_used or "",
             "materialItemId": self.material_item_id or "",

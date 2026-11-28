@@ -344,6 +344,36 @@ def get_bootstrap_data(
 
     salon_id = salon.id
 
+    # Seed 125 OLG_CATALOG services for outlookgood9@gmail.com if their salon has 0 services
+    if (
+        (user and (user.email or "").strip().lower() == "outlookgood9@gmail.com")
+        or (salon and (salon.email or "").strip().lower() == "outlookgood9@gmail.com")
+    ):
+        existing_srv_count = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).count()
+        if existing_srv_count == 0:
+            try:
+                from app.core.olg_catalog import OLG_CATALOG
+                for item in OLG_CATALOG:
+                    svc_id = f"{item['id']}_{salon_id[-6:]}"
+                    if not db.query(ServiceModel).filter(ServiceModel.id == svc_id).first():
+                        db.add(ServiceModel(
+                            id=svc_id,
+                            salon_id=salon_id,
+                            category=item.get("category", "Hair"),
+                            name=item["name"],
+                            duration_minutes=int(item.get("duration_minutes") or 30),
+                            buffer_minutes=int(item.get("buffer_minutes") or 5),
+                            price=float(item.get("price") or 0.0),
+                            description=item.get("description", ""),
+                            is_online_bookable=bool(item.get("is_online_bookable", True)),
+                            is_active=bool(item.get("is_active", True)),
+                            popular=bool(item.get("popular", False)),
+                        ))
+                db.commit()
+            except Exception as ex:
+                db.rollback()
+                print(f"[OLG Bootstrap Seed Notice] {ex}")
+
     customers = [c.to_dict() for c in db.query(CustomerModel).filter(CustomerModel.salon_id == salon_id).all()]
     services_query = db.query(ServiceModel).filter(ServiceModel.salon_id == salon_id).all()
     services = [s.to_dict() for s in services_query]
@@ -2120,12 +2150,13 @@ def remove_services_endpoint(
 
 @router.get("/services", tags=["Services"])
 def get_services(
+    branch_id: Optional[str] = None,
     context: tuple[UserModel, SalonModel] = Depends(get_current_user_and_salon),
     db: Session = Depends(get_db)
 ):
     _, salon = context
     services = db.query(ServiceModel).filter(ServiceModel.salon_id == salon.id).all()
-    return [s.to_dict() for s in services]
+    return [s.to_dict(branch_id=branch_id) for s in services]
 
 
 @router.post("/services", tags=["Services"])
@@ -2135,6 +2166,9 @@ def create_service(
     db: Session = Depends(get_db)
 ):
     _, salon = context
+    branch_id = str(data.get("branchId") or "").strip()
+    base_price = float(data.get("price") or 0.0)
+    bp_json = json.dumps({branch_id: base_price}) if branch_id else "{}"
     service = ServiceModel(
         id=f"srv_{uuid.uuid4().hex[:12]}",
         salon_id=salon.id,
@@ -2142,7 +2176,7 @@ def create_service(
         name=data.get("name", "New Service"),
         duration_minutes=int(data.get("durationMinutes") or 45),
         buffer_minutes=int(data.get("bufferMinutes") or 5),
-        price=float(data.get("price") or 0.0),
+        price=base_price,
         description=data.get("description", ""),
         material_used=data.get("materialUsed") or data.get("averageMaterialUsed") or "",
         material_item_id=data.get("materialItemId") or None,
@@ -2152,11 +2186,12 @@ def create_service(
         is_active=bool(data.get("isActive", True)),
         popular=bool(data.get("popular", False)),
         image_url=str(data.get("imageUrl") or ""),
+        branch_prices_json=bp_json,
     )
     db.add(service)
     db.commit()
     db.refresh(service)
-    return service.to_dict()
+    return service.to_dict(branch_id=branch_id or None)
 
 
 @router.put("/services/{service_id}", tags=["Services"])
@@ -2174,12 +2209,21 @@ def update_service(
     if not service:
         raise HTTPException(status_code=404, detail="Service not found")
 
+    branch_id = str(data.get("branchId") or "").strip()
+
     for k, v in data.items():
         if k == "name": service.name = v
         elif k == "category": service.category = v
         elif k == "durationMinutes": service.duration_minutes = int(v)
         elif k == "bufferMinutes": service.buffer_minutes = int(v)
-        elif k == "price": service.price = float(v)
+        elif k == "price":
+            new_price = float(v)
+            if branch_id:
+                bp = service.get_branch_prices()
+                bp[branch_id] = new_price
+                service.branch_prices_json = json.dumps(bp)
+            else:
+                service.price = new_price
         elif k == "description": service.description = v
         elif k in ("materialUsed", "averageMaterialUsed"): service.material_used = str(v)
         elif k == "materialItemId": service.material_item_id = str(v) if v else None
@@ -2192,7 +2236,7 @@ def update_service(
 
     db.commit()
     db.refresh(service)
-    return service.to_dict()
+    return service.to_dict(branch_id=branch_id or None)
 
 
 @router.delete("/services/{service_id}", tags=["Services"])
